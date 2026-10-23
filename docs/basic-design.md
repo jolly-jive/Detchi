@@ -143,7 +143,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 - クラッシュや電源断では、止まったことを書けない。起動の行があれば、その前の空白は Detchi が動いていなかったと読める。
 - どの機器にも属さない出来事(設定の誤りで起動できない、など)は、記録ではなく標準出力のログに書く。
 - 測定の行だけを扱うときは、jq なら `select(.protocol)` で絞る。これを利用者向けの文書に書く。
-- 出来事の種類の候補:`start`(起動)、`stop`(正常な停止)、`dropped`(ドロップした件数と期間)、`file_opened`(日の切り替わり。Detchi の版や設定の情報を添える)、`target_removed`(設定から外された)。細部は未決。
+- 出来事の種類の候補:`start`(起動)、`stop`(正常な停止)、`dropped`(ドロップした件数と期間)、`file_opened`(日の切り替わり。Detchi の版や設定の情報を添える)、`target_removed`(設定から外された)、`resolve_failed`(名前の引き直しに失敗した)、`addr_changed`(引き直したアドレスが変わった)。細部は未決。
 
 ### 6.2 ファイルの名前と切り替え
 
@@ -203,20 +203,117 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 ## 7. 設定ファイルと資格情報
 
 - 設定ファイルは Detchi 専用に作る(Koitohan の FreeRADIUS の `clients.conf` とは定義内容が合わない)。
+- 設定ファイルは**1つだけ**(NexPinger は複数を受け付けるが、Detchi では要らない)。
+
+### 7.1 形式
+
+- 形式は **YAML**(NexPinger と同じ。`yaml_elixir` を使い、その下は `yamerl`)。コメントが書け、Compose を書く Koitohan の利用者にも馴染みがある。
+  - TOML は、機器と測定の2段の入れ子が `[[targets.probes]]` になって読みにくいので採らなかった。Erlang の項は運用する人に馴染みがなく、JSON はコメントが書けない。
+- **知らないキーは誤りとして、起動のときに止まる。** 綴りの誤りで、測るつもりの項目が黙って抜けたまま5年残る、という事故を防ぐ。
+- 型は厳しく確かめる。たとえば OID は文字列でなければ誤り(`1.3` と書くと浮動小数点数になる、などの事故を防ぐ)。
+- **`yamerl` の構文エラーには、壊れた箇所の値がそのまま入る**(NexPinger の `_build` にある `yamerl` で確かめた。`a: "secretcommunity` で始まる壊れた YAML のエラーに `"secretcommunity b: ["` が入っていた)。そのまま出すと資格情報が漏れるので、行と桁と理由だけを出す。テストで確かめる。
+
+### 7.2 全体の形(たたき台)
+
+```yaml
+data_dir: /var/lib/detchi
+retention_days: 1827
+compression: gzip            # gzip | zstd
+resolve_interval: 5m
+
+defaults:                    # 各測定で省略したときの値
+  interval: 60s
+  timeout: 1s
+
+credentials:
+  campus-v2c: { version: v2c, community: "..." }
+  core-v3:    { version: v3, user: "...", auth: sha256, auth_pass: "...", priv: aes128, priv_pass: "..." }
+
+targets:
+  - name: core1              # 必須。形は 6.2 節
+    host: 192.0.2.1          # IP アドレスかホスト名
+    family: auto             # ipv4 | ipv6 | auto(NexPinger と同じ)
+    snmp:                    # この機器の SNMP の共通の設定
+      credential: campus-v2c
+      port: 161
+    probes:
+      - name: ping
+        protocol: icmp
+      - name: ssh
+        protocol: tcp
+        port: 22
+      - name: dns
+        protocol: udp
+        service: dns         # dns | ntp | quic(ポートの既定は 53 / 123 / 443)
+      - name: if-uplink
+        protocol: snmp
+        interval: 300s
+        timeout: 5s
+        oids:                # 1回の要求で取る組(5 節)
+          - 1.3.6.1.2.1.1.3.0
+          - 1.3.6.1.2.1.31.1.1.1.1.1
+          - 1.3.6.1.2.1.31.1.1.1.6.1
+```
+
+- キーの名前は記録に合わせる。`name` は記録の `target` と `probe` に、`protocol` は記録の `protocol` にそのまま入る(NexPinger は `type` と書くが、設定は共有しないので記録に揃える)。
+- `probe` の名前は、機器の中で重ならないこと。形は `target` と同じ規則(6.2 節)。ファイル名には使わないが、規則を1つにしておくほうが説明しやすい。
+- SNMP の資格情報は機器の単位で指定する。1台の機器の community は普通1つで、測定ごとに書くと繰り返しになる。
+- SNMP の測定1つが1回の要求にあたる(5 節の「OID の組」)。`op` は最初は `get` だけにして、GetBulk や walk は後で足す。
+
+### 7.3 時間の書き方
+
+- **単位付きの文字列**で書く(`500ms`、`60s`、`5m`)。単位のない数値は誤り(ミリ秒と秒の取り違えを防ぐ)。NexPinger は単位のないミリ秒だが、Detchi の間隔は分の単位が主になるので変えた。
+- `timeout` は `interval` より短いこと(同じ測定の要求が重ならないように)。
+- 6.2 節の「前日のファイルを開いておく時間」は、設定の中でいちばん長い `timeout` から決まる。
+
+### 7.4 既定値(案)
+
+| 項目 | 既定 | 理由 |
+| --- | --- | --- |
+| 設定ファイルの場所 | `/etc/detchi/detchi.yml`。環境変数 `DETCHI_CONFIG` で変えられる。 | Koitohan は tmpfs へ写してから降格する(9.1 節)ので、場所を変えられる必要がある。 |
+| `data_dir` | `/var/lib/detchi` | FHS に沿う。コンテナではここをマウントする。 |
+| `interval` | 60s | 6.4 節の量の見積もりと同じ。 |
+| `timeout` | RTT は 1s、SNMP は 5s | SNMP は機器の CPU 次第で遅い。 |
+| SNMP の再送 | 0 回 | 再送するとロスが記録に表れない。失敗も1行として残す方針(6.1 節)に合う。 |
+| `resolve_interval` | 5m | 7.6 節。 |
+
+### 7.5 測る時刻の分散
+
+- すべての測定が同じ瞬間に始まらないように、Detchi が自動で始まりをずらす。設定の項目にはしない。
+
+### 7.6 ホスト名の解決
+
+- `host` が IP アドレスなら解決しない。
+- ホスト名なら、**一定の間隔(`resolve_interval`)で引き直す**。
+  - 起動のときだけ引く(NexPinger の方法)と、5年動かし続ける間にアドレスが変わっても、再起動するまで追従できない。
+  - 測るたびに引くと、DNS が止まったときに、機器が生きていてもすべての測定が失敗する。測りたいのは機器であって DNS ではない。
+- 引き直しに失敗したら、前のアドレスで測り続ける。失敗とアドレスの変化は、出来事の行(`resolve_failed`、`addr_changed`)に書く。測定の行には実際に送った `addr` があるので、何を測ったかは後から分かる。
+- 起動のときに一度も引けなかった機器は、起動を止めずに(DNS が1つ止まっただけで全体が動かなくならないように)、`status` が `error` の行を書きながら引けるまで再試行する。
+- TTL には従わない。Erlang の普通の名前解決(`:inet.getaddr`。`/etc/hosts` も見る)は TTL を返さず、TTL を返す `inet_res` は `/etc/hosts` を見ないため。
+
+### 7.7 同じ測定の繰り返し
+
+- 機器が多いと、同じ `probes` の並びを何度も書くことになる。最初の版では Detchi の側では何もせず、YAML のアンカー(`&名前` で名前を付け、`*名前` で参照する)を使ってもらう。
+
+  ```yaml
+  x-switch-probes: &switch
+    - { name: ping, protocol: icmp }
+    - { name: ssh,  protocol: tcp, port: 22 }
+  targets:
+    - { name: sw1, host: 192.0.2.11, probes: *switch }
+    - { name: sw2, host: 192.0.2.12, probes: *switch }
+  ```
+
+  - アンカーを置くための上の段のキーは、**`x-` で始まる名前**にする(例の `x-switch-probes`)。`x-` で始まるキーは知らないキーとして扱わず、無視する(Compose の拡張フィールドと同じ)。使い勝手は、実際に運用してから見直す。
+- `yamerl` では `&` と `*` は使えるが、マージキー(`<<: *名前`)は展開されず、`"<<"` という普通のキーになることを確かめた。知らないキーとして誤りになるので、黙って違う意味にはならない。
+- 一部だけを上書きしたい(この機器だけ間隔を変える、など)要望が出たら、資格情報と同じように名前付きの「測定の組」を定義して参照する形を足す。
+
+### 7.8 資格情報
+
 - SNMP の資格情報は**設定ファイルに直接書く**。
   - 理由:community や v3 の資格情報は、機器の側に設定した値に合わせて書くもので、Koitohan が生成するパスワード(`secrets/`)とは性格が違う。`clients.conf` の共有シークレットと同じ扱いにする。
   - `secrets/` に分ける案は、生成物でない値が `make secrets` の前提と混ざるので採らなかった。
-- **名前付きの資格情報(プロファイル)**を定義し、機器からは名前で参照する。形式は未定。たとえば次のような形。
-
-  ```yaml
-  credentials:
-    campus-v2c: { version: v2c, community: "..." }
-    core-v3:    { version: v3, user: "...", auth: sha256, auth_pass: "...", priv: aes128, priv_pass: "..." }
-  targets:
-    - name: core1
-      host: 192.0.2.1
-      snmp: { credential: campus-v2c, oids: [...] }
-  ```
+- **名前付きの資格情報(プロファイル)**を `credentials` に定義し、機器の `snmp.credential` から名前で参照する(7.2 節)。
 
 - 資格情報を、記録(JSON Lines)、エラーのメッセージ、ログのどこにも出さない。テストで確かめる。
 - 設定ファイルを人に見せると資格情報も漏れることを、文書に注意として書く。
@@ -287,7 +384,9 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
 
 ## 10. 未決定事項
 
-- 設定ファイルの形式(NexPinger は YAML)と、項目の詳細(間隔、タイムアウト、対象の書き方、`data_dir` の既定)。
+- 設定ファイルの細部(7 節のたたき台の残り)。
+  - v3 の資格情報の項目と、選べる認証と暗号の方式。
+  - 一度も名前を引けていない機器の行で、`addr` をどうするか(書かない、など)。
 - スキーマの細部(6.1 節のたたき台の残り)。
   - 出来事の種類と、それぞれの項目。
   - `error` の形。
