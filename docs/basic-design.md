@@ -94,6 +94,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 {"v":1,"ts":"2026-10-23T21:00:00.123456+09:00","target":"core1","probe":"ping","protocol":"icmp","addr":"192.0.2.1","status":"ok","rtt_us":1234}
 {"v":1,"ts":"2026-10-23T21:01:00.120001+09:00","target":"core1","probe":"ping","protocol":"icmp","addr":"192.0.2.1","status":"timeout","timeout_ms":1000}
 {"v":1,"ts":"2026-10-23T21:00:00.130000+09:00","target":"core1","probe":"dns","protocol":"udp","addr":"192.0.2.1","port":53,"status":"ok","rtt_us":2345}
+{"v":1,"ts":"2026-10-23T21:00:00.135000+09:00","target":"core1","probe":"ssh","protocol":"tcp","addr":"192.0.2.1","port":22,"status":"refused","rtt_us":456,"error":{"reason":"errno","errno":"econnrefused"}}
 {"v":1,"ts":"2026-10-23T21:00:00.140000+09:00","target":"core1","probe":"if-uplink","protocol":"snmp","addr":"192.0.2.1","status":"ok","rtt_us":5678,
  "snmp":{"version":"v2c","op":"get","varbinds":[
    {"oid":"1.3.6.1.2.1.1.3.0","type":"TimeTicks","value":123456},
@@ -119,8 +120,8 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 | `addr` | 実際に送った宛先の IP アドレス(名前ではない。DNS の答えが変わっても、何を測ったかが分かるように)。 |
 | `port` | TCP、UDP の宛先のポート。 |
 | `status` | `ok`、`timeout`、`unreachable`、`refused`、`error` のどれか。 |
-| `error` | `status` が `ok` でないときの理由(SNMP の `errorStatus` と `errorIndex`、ICMP の Destination Unreachable の種類など。形は未決)。 |
-| `rtt_us` | 要求を送ってから応答を受けるまでの時間。マイクロ秒の整数。SNMP の行にも付ける。 |
+| `error` | `status` が `ok` でも `timeout` でもないときの理由(形は下を参照)。 |
+| `rtt_us` | 要求を送ってから応答を受けるまでの時間。マイクロ秒の整数。SNMP の行にも付ける。ネットワークから何か返ってきたと分かるときだけ付ける(`ok`、TCP の RST、UDP の port unreachable、SNMP の `errorStatus`)。errno だけで分かる `unreachable` には付けない(ICMP が届いたのか、手元の ARP が失敗したのかを区別できず、その時間は RTT とは限らないため)。 |
 | `timeout_ms` | `status` が `timeout` のときの、待った時間。 |
 
 - プロトコルに固有の項目は、プロトコルの名前の下に入れ子にする(例の `"snmp":{...}`)。将来 gNMI や NETCONF の項目が増えても、共通の項目とぶつからない。ただし `port` のように RTT で共通に使うものは、入れ子にしない。
@@ -133,6 +134,32 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
     - 計算すると double(IEEE 754)になり、2^53 を超えた部分の精度は落ちる。jq 1.7 で確かめた例:`18446744073709551615 - 1` は `18446744073709552000`、`9007199254740993 - 9007199254740992` は `0`。
     - バイトのカウンターが 2^53 に届くのは、100Gbps で流し続けて約 8 日、10Gbps で約 83 日、1Gbps で約 2.3 年。ただし差分の誤差は、2^64 の近くでも1回あたり最大 2048 なので、レートの計算にはまず効かない。等しいかの判定や一周の判定のように正確さが要るときは、Python などの任意精度の言語で扱う。これを利用者向けの文書に書く。
 - 資格情報に当たるもの(community、v3 のユーザーや鍵)は行に入れない。資格情報のプロファイルの名前も入れない(要らないので)。
+- 名前を一度も引けていない機器(7.6 節)の行には、`addr` を書かない。`status` は `error`、`error` の `reason` は `resolve`。
+
+`error` の形:
+
+- `reason`(Detchi が決めた語のどれか)と、語ごとの項目を持つオブジェクト。
+
+  ```json
+  "error":{"reason":"errno","errno":"ehostunreach"}
+  "error":{"reason":"snmp","error_status":"genErr","error_index":2}
+  "error":{"reason":"resolve","errno":"nxdomain"}
+  "error":{"reason":"internal"}
+  ```
+
+  | `reason` | 場面 | 項目 | `status` |
+  | --- | --- | --- | --- |
+  | `errno` | OS のソケットの誤り(TCP の RST、connect の EHOSTUNREACH、UDP の port unreachable、ICMP の Destination Unreachable、手元に経路がない、など) | `errno` | `refused`、`unreachable` |
+  | `snmp` | 応答の `errorStatus` が 0 でない | `error_status`、`error_index` | `error` |
+  | `resolve` | 名前を一度も引けていない(7.6 節) | `errno` | `error` |
+  | `internal` | 想定していない失敗 | なし | `error` |
+
+- **自由な文の項目は持たない。** 決まった語と数値だけを書く。ライブラリの誤りの文面や項には何が入るか分からず(7.1 節の `yamerl` の例)、資格情報が漏れうるため。`internal` の詳しいことは、資格情報を除いて標準出力のログにだけ書く。
+  - NexPinger は、よく出る理由を英語の文(`connection refused` など)に直し、それ以外は `inspect(reason)` をそのまま書いている。NexPinger には資格情報がないのでそれで困らないが、Detchi では同じことができない。また、5 年分を機械的に絞るには、文より決まった語のほうが扱いやすい。
+- `errno` は、Erlang が返す errno の名前をそのまま書く(`econnrefused`、`ehostunreach`、`enetunreach` など。NexPinger のように文には直さない。対象は Linux だけなので、OS による違いを吸収しなくてよい)。名前解決の誤り(`nxdomain` など)も、`:inet.getaddr` が返す名前をそのまま書く。
+- ICMP は NexPinger と同じく、ソケットを connect して、Destination Unreachable をソケットの誤り(errno)として受ける。ICMP の type と code、返してきたルーターのアドレスは、最初は書かない。`IP_RECVERR` で取れると確かめられたら、`reason` に `icmp` を足す。
+- `snmp` の `error_status` は RFC 3416 の名前(`tooBig`、`genErr` など。varbinds の `type` と同じく RFC の綴り)。`error_index` は1から始まり、設定の `oids` の順を指す。この行には `varbinds` を書かない(誤りのときの値は意味を持たない)。
+- `timeout` のときは `error` を書かず、`timeout_ms` を書く。
 
 出来事の行:
 
@@ -144,7 +171,25 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 - クラッシュや電源断では、止まったことを書けない。起動の行があれば、その前の空白は Detchi が動いていなかったと読める。
 - どの機器にも属さない出来事(設定の誤りで起動できない、など)は、記録ではなく標準出力のログに書く。
 - 測定の行だけを扱うときは、jq なら `select(.protocol)` で絞る。これを利用者向けの文書に書く。
-- 出来事の種類の候補:`start`(起動。設定の指紋を添える。7.9 節)、`stop`(正常な停止)、`dropped`(ドロップした件数と期間)、`file_opened`(日の切り替わり。Detchi の版や設定の情報を添える)、`resolve_failed`(名前の引き直しに失敗した)、`addr_changed`(引き直したアドレスが変わった)。細部は未決。
+- 出来事の種類と、共通の項目(`v`、`ts`、`target`、`event`)のほかの項目:
+
+  | `event` | 項目 | いつ書くか |
+  | --- | --- | --- |
+  | `start` | `version`、`config_hash`、`addr` | 起動したとき。 |
+  | `file_opened` | `version`、`config_hash`、`addr` | 日が替わって新しいファイルを開いたとき。起動のときは書かない(`start` が代わりになる)。 |
+  | `stop` | `abandoned` | SIGTERM で止まるとき。`abandoned` は、結果を待たずに打ち切った要求の数(7.9 節)。 |
+  | `dropped` | `count`、`first_ts`、`last_ts` | ドロップが収まって書けるようになったとき、まとめて1行。`first_ts` と `last_ts` は落とした行の `ts` の範囲。 |
+  | `resolve_failed` | `host`、`error`、`addr` | 引き直しに失敗するたびに書く。`error` の `reason` は `resolve`。`addr` は使い続けているアドレス。 |
+  | `addr_changed` | `host`、`old`、`new` | 引き直したアドレスが変わったとき。初めて引けたときは `old` を省く。 |
+  | `clock_stepped` | `offset_us` | 壁時計が大きく跳んだとき(単調な時計と比べて見つける)。chrony が時刻を合わせる前に起動すると `ts` が跳ぶので、その説明になる。閾値は未決。 |
+
+  ```json
+  {"v":1,"ts":"2026-10-23T21:00:00.000000+09:00","target":"core1","event":"start","version":"0.1.0","config_hash":"sha256:3f9a...","addr":"192.0.2.1"}
+  ```
+
+  - `version` は Detchi の版。`config_hash` は設定の指紋(7.9 節)。`addr` は、その時点で使っているアドレスで、まだ引けていなければ書かない。
+  - `start` と `file_opened` のどちらかが必ずファイルの最初の行に来るので、どのファイルも最初の行に Detchi の版と設定の指紋がある。1日分のファイルだけで読める。
+  - `resolve_failed` を状態が変わったときだけでなく、失敗のたびに書くのは、そのほうが単純で、1回を1行にする方針に合うため。DNS が1日止まっても、`resolve_interval` が 5m なら 288 行(約 40KB)。
   - `target_removed`(設定から外された)は候補から外した。設定の反映は再起動だけ(7.9 節)なので、前の設定を覚えておかないと外されたと判断できない。外された機器のファイルは `stop` の行のあとに何も続かないので、そう読める。
 
 ### 6.2 ファイルの名前と切り替え
@@ -290,7 +335,7 @@ targets:
   - 起動のときだけ引く(NexPinger の方法)と、5年動かし続ける間にアドレスが変わっても、再起動するまで追従できない。
   - 測るたびに引くと、DNS が止まったときに、機器が生きていてもすべての測定が失敗する。測りたいのは機器であって DNS ではない。
 - 引き直しに失敗したら、前のアドレスで測り続ける。失敗とアドレスの変化は、出来事の行(`resolve_failed`、`addr_changed`)に書く。測定の行には実際に送った `addr` があるので、何を測ったかは後から分かる。
-- 起動のときに一度も引けなかった機器は、起動を止めずに(DNS が1つ止まっただけで全体が動かなくならないように)、`status` が `error` の行を書きながら引けるまで再試行する。
+- 起動のときに一度も引けなかった機器は、起動を止めずに(DNS が1つ止まっただけで全体が動かなくならないように)、`status` が `error` の行を書きながら引けるまで再試行する。その行には `addr` を書かない(6.1 節)。
 - TTL には従わない。Erlang の普通の名前解決(`:inet.getaddr`。`/etc/hosts` も見る)は TTL を返さず、TTL を返す `inet_res` は `/etc/hosts` を見ないため。
 
 ### 7.7 同じ測定の繰り返し
@@ -331,7 +376,14 @@ targets:
 - **設定を確かめるだけのコマンド**を用意する(例:`detchi check-config`)。`restart: unless-stopped`(9.1 節)の下では、誤った設定で再起動すると起動と停止を繰り返し、その間は何も測れない。再起動の前に確かめられるようにする。エラーの出し方は 7.1 節と同じ(資格情報を出さない)。
 - `start` の行に**設定の指紋**(ハッシュ)を添える。どの時点で設定が変わったかを、記録から追えるように。
   - 範囲は、**その機器の定義だけ**(省略した値は既定値で埋めたもの)。資格情報と、資格情報のプロファイルの名前は除く。
-  - ファイル全体のハッシュにしないのは、`public` のような弱い community が総当たりで当てられるため。
+  - ファイル全体のハッシュにしないのは、`public` のような弱い community が総当たりで当てられるため。資格情報を除くので、入力に秘密は含まれない。
+  - 項目の名前は `config_hash`。値は方式の名前を前に付けた SHA-256 の16進(`"sha256:3f9a..."`。64 桁を切り詰めない)。方式を変えても見分けられる。
+  - 正規化:機器の定義(既定値で埋めたもの)を、キーを並べた、空白のない JSON にする。
+    - 時間はミリ秒の整数に直す(`60s` と `1m` は同じ指紋になる)。
+    - `probes` は名前の順に並べる(並びは測り方に影響しないので、入れ替えただけでは変わらない)。
+    - `oids` は順序を保つ(varbinds の順序に表れる)。
+  - Detchi の版が上がって既定値やキーが変わると、設定を変えなくても指紋は変わる。測り方が変わったということなので、それでよい。`start` の行の `version` で、どちらで変わったかが読める。文書に書く。
+  - `detchi check-config` に、機器ごとの正規化した JSON と指紋を出す選択肢を付ける(案)。指紋が変わったとき、何が変わったかを手元で比べられる。
 
 ## 8. 配布、文書、ライセンス
 
@@ -415,11 +467,10 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
 
 - 設定ファイルの細部(7 節のたたき台の残り)。
   - v3 の資格情報の項目と、選べる認証と暗号の方式。
-  - 一度も名前を引けていない機器の行で、`addr` をどうするか(書かない、など)。
-- スキーマの細部(6.1 節のたたき台の残り)。
-  - 出来事の種類と、それぞれの項目。
-  - `error` の形。
-  - 設定の指紋(7.9 節)の項目の名前、正規化の方法、ハッシュの方式。
+- スキーマの細部(6.1 節)。
+  - v3 の report PDU(`usmStatsWrongDigests` など)を `error` でどう書くか(`reason` に `snmp_report` を足す、など)。
+  - ICMP の type と code を `IP_RECVERR` で取れるか(取れれば `reason` に `icmp` を足す)。
+  - `clock_stepped` を書く閾値。
 - プッシュ型の時刻の扱い(6.1 節。暫定の決め。実機で確かめて考え直す)。
 - 稼働の確認のコマンド(9.5 節)の細部。
   - 名前と、出力の形(人が読む行か JSON か、`-q` のような絞り込み)。
