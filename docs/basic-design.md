@@ -42,7 +42,23 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 
 - Elixir/OTP で書く。対象は Linux だけ。
 - 要求する OTP は **28 以上**(zstd のため。6.3 節)。
-- SNMP は OTP 標準の `snmp` アプリケーション(マネージャーの `snmpm`)を使う見込み。v1、v2c、v3 に対応しており、外部の依存が要らない。API に癖があるので、最初に小さく試す価値がある。
+- SNMP は OTP 標準の `snmp` アプリケーション(マネージャーの `snmpm`)を使う。v1、v2c、v3 に対応しており、外部の依存が要らない。v2c の get で動くことを確かめた(2026-10-24。5 節)。
+- 形は **escript**(NexPinger と同じ)。1つのファイル `detchi` に、サブコマンドを持たせる。
+  - `detchi run`:サービスとして動き続ける。
+  - `detchi check-config`:設定を確かめる(7.9 節)。
+  - `detchi status`:記録を見て稼働を確かめる(9.5 節)。
+  - Mix のリリースは採らなかった。リリースの利点は ERTS を同梱できることだが、Detchi はリリースのほかの機能をほとんど使わず、むしろ切る手間が増える。
+    - リリースの `start` は既定で Erlang の分散を有効にし、epmd を起動して待ち受ける(9.5 節で、待ち受ける口を増やさないと決めた)。
+    - `remote`、`rpc` などの使わないコマンドが付く。
+    - リリースの名前を `detchi` にすると、`bin/detchi` は Mix のスクリプトになるので、`detchi check-config` の形にするには包むスクリプトが要る。
+    - 1回だけ動くコマンドは `bin/<リリース> eval` で動くこと(引数、終了コード)も確かめたが、上の理由で escript にした。
+  - escript の注意(2026-10-24 に確かめた)
+    - `mix.exs` の `escript:` に **`app: nil`** を書く。書かないと、escript は `main/1` の前に自分のアプリケーションを起動するので、`check-config` や `status` でも監督ツリーが動き、測定が始まってしまう。アプリケーションは `run` の中で自分で起動する(`snmpm` の設定を書き出したあと。5 節)。監督ツリーを起動しないことはテストで確かめる。
+    - SIGTERM は OTP の既定の処理で `init:stop` になり、監督ツリーの子の `terminate/2` が呼ばれる(`stop` の行はここで書く。7.9 節)。終了コードは 0。
+    - 捕まえていない例外は終了コード 1、`System.halt/1` の値はそのまま終了コードになる。Erlang の分散と epmd は動かない。
+    - 起動の時間は、開発の PC で 0.44 秒(Raspberry Pi は未計測)。
+    - 実行には Erlang/OTP 28 以上が要る(escript は ERTS を含まない)。先頭の行は `#! /usr/bin/env escript` なので、`escript` が `PATH` にあること。
+    - escript は `priv` を扱えないが、Detchi は `priv` を使わない。`config/runtime.exs` も使えないが、設定は YAML と環境変数なので要らない。
 
 ## 4. 測り方(RTT)
 
@@ -114,6 +130,13 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
     - 一周とみなし、上限ではじく(RRDtool の COUNTER)。
     - sysUpTime で再起動を見る(Cacti)。
   - 標準の仕組みとして、RFC 2863 の `ifCounterDiscontinuityTime` もある。
+- `snmpm` の使い方(2026-10-24 に、手元に立てた OTP の `snmpa` を相手に確かめた)
+  - マネージャーは、設定のファイル(`manager.conf` など)と、書き込める `db_dir` を要る。`detchi run` の起動のときに、一時ディレクトリ(`System.tmp_dir!/0`。`TMPDIR` か `/tmp`)へ書き出してから `snmp` を起動する(9.1 節)。マネージャーのポートは 0(OS に選ばせる)にする。
+  - マネージャーの最大の大きさ(`max_message_size`)は 65535 にする。要求がこれを超えると、マネージャーは送る前に断る(`send_failed`)。応答の大きさの判断は、エージェントに任せる(超えれば `tooBig` が返る)。
+  - 機器は `snmpm:register_agent/3` で登録し、`snmpm:sync_get2/4` で取る。応答は `{varbind, OID, 型, 値, 番号}` の並びで、型は `'OCTET STRING'`、`'OBJECT IDENTIFIER'`、`'INTEGER'` などの atom、例外は型が `'NULL'` で値が `noSuchObject` などの形。記録の型の名前(6.1 節)への対応表を実装に持つ。OctetString の値は charlist で返る。
+  - タイムアウトの後に届いた応答は、user のモジュールの `handle_pdu/4` に渡る。捨てる。
+  - **SNMP の行の `status` は `ok`、`timeout`、`error` だけになる。** `snmpm` のソケットは機器ごとに connect していないので、ICMP の誤り(Port Unreachable など)が見えない。エージェントがいない、ポートが閉じている、community が誤っている、のどれも `timeout` になる。利用者向けの文書に書く。
+  - **RTT には `snmpm` の処理の時間が含まれる。** `sync_get2` の前後で測るので、マネージャーの内部のプロセスを渡る時間が入る。ループバックで 0.3〜1.1ms(ICMP は 0.15ms)。利用者向けの文書に書く。
 - 版は v2c と v3 の両方に対応する。v3 は後回しでもよい。
   - v3 の注意:`snmpm` の USM は、パスフレーズではなく、機器の engine ID で局所化した鍵を受け取る。パスフレーズを書いてもらい、engine ID を取得してから鍵に変換することになる。
 
@@ -230,7 +253,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
   - `status` は、Port Unreachable(v4 は type 3 code 3、v6 は type 1 code 4)なら `refused`、それ以外は `unreachable`。
   - ICMP の誤りでも誤りのキューが空なら(想定していないが)、`reason` は `errno` で書く。
 - ARP が引けないときの Host Unreachable は約 3 秒後に来るので、`timeout` が既定の 1 秒なら、先に `timeout` になる。
-- `snmp` の `error_status` は RFC 3416 の名前(`tooBig`、`genErr` など。varbinds の `type` と同じく RFC の綴り)。`error_index` は1から始まり、設定の `oids` の順を指す。この行には `varbinds` を書かない(誤りのときの値は意味を持たない)。
+- `snmp` の `error_status` は RFC 3416 の名前(`tooBig`、`genErr` など。varbinds の `type` と同じく RFC の綴り)。`error_index` は1から始まり、設定の `oids` の順を指す。0 は特定の varbind を指さない(`tooBig` は RFC 3416 のとおり 0 で返り、varbinds は空。2026-10-24 に確かめた)。この行には `varbinds` を書かない(誤りのときの値は意味を持たない)。
 - `snmp_report` の `oid` は、report PDU に入っていた `usmStats*` などの OID を数値で書く(5 節の方針と同じ。名前にはしない)。応答が返ってきているので `rtt_us` も付ける。`snmpm` がこの報告をどんな形で返すかは、v3 を実装するときに確かめる。
 - `timeout` のときは `error` を書かず、`timeout_ms` を書く。
 
@@ -462,7 +485,8 @@ targets:
 
 ## 8. 配布、文書、ライセンス
 
-- 配布の形は、当面**ソースのタグ**。利用する側(Koitohan など)の Dockerfile が、多段のビルドでタグからビルドする。
+- 配布の形は、当面**ソースのタグ**。利用する側(Koitohan など)の Dockerfile が、多段のビルドでタグから escript をビルドする(3 節)。
+  - 実行の段は、Erlang/OTP 28 以上のイメージ(例:`erlang:28-alpine`)の上で escript を動かす。escript は ERTS を含まないので、素の Alpine では動かない。
 - 文書
   - README と利用者向けの文書は、`<名前>.md`(英語)と `<名前>.ja.md`(日本語)の対にする(Koitohan と同じ)。
   - 本書(基本設計書)は日本語だけ(Koitohan の `docs/basic-design.md` と同じ)。
@@ -483,6 +507,7 @@ Koitohan は、Detchi がリリースされたら組み込む予定で、組み�
   - `read_only: true`(ルートファイルシステムは読み取り専用。書くのは tmpfs と記録の置き場所だけ)
   - `security_opt: no-new-privileges:true`(setuid やファイルケーパビリティに頼らない)
   - 環境変数 `TZ`(Alpine なら `tzdata` が要る)
+- Detchi は、記録の置き場所のほかに、一時ディレクトリ(`TMPDIR`、なければ `/tmp`)に書く。`snmpm` の設定のファイルを起動のときに書き出すため(5 節)。`read_only: true` の下では、`/tmp` を tmpfs にする。
 - root 以外で動く。Koitohan は、root で起動して自分で降格する形をとっている。
   - 設定ファイル(資格情報を含む、0600)は、root のうちに tmpfs へ写してから降格する形が Koitohan の流儀(OpenLDAP、OpenSSH の証明書と同じ)。
 - ログは標準出力へ(`docker compose logs` で見る)。
@@ -511,10 +536,10 @@ Koitohan は、Detchi がリリースされたら組み込む予定で、組み�
 - Koitohan の `bin/check_services.sh` は、各サービスを**コンテナの中から、そのコンテナにあるコマンドで**実際に使ってみて判定する。コンテナが動いているかは、別に確かめている。
 - Detchi には、**記録を見て稼働を確かめるコマンド** `detchi status` を用意する。
   - 名前は `systemctl status` と同じく「動いているか」を尋ねるものとして通じる。`check-config` に揃えた `check-records` は、何を確かめるのかが伝わりにくいので採らなかった。
-  - 起動の仕方(`bin/detchi eval` を包むスクリプトにする、など)は `check-config` と共通の問題で、実装を始めるときに小さく試す。
+  - escript のサブコマンドとして動く(3 節)。
   - Detchi が使えているとは、記録が書かれ続けていること。失敗も1行として残す(6.1 節)ので、機器が応答しなくても行は書かれる。最近書かれていれば、Detchi は動いていて、測っている。
   - 動いている Detchi とは通信しない。設定と `<data_dir>` を読むだけの、1回だけ動くコマンドにする(`detchi check-config` と同じ形。7.9 節)。
-    - 待ち受ける口を増やさずに済む。ほかの案は採らなかった。Unix ソケットは実装が増える。Erlang の分散(`bin/detchi rpc`)は、cookie を持つと何でも実行できるうえ、epmd も要る。HTTP は、Detchi が出ていくだけのサービス(9.3 節)であることに合わない。
+    - 待ち受ける口を増やさずに済む。ほかの案は採らなかった。Unix ソケットは実装が増える。Erlang の分散(リリースの `rpc` など)は、cookie を持つと何でも実行できるうえ、epmd も要る。HTTP は、Detchi が出ていくだけのサービス(9.3 節)であることに合わない。
     - Detchi が止まっていても、固まっていても、「書かれていない」として同じに表れる。区別は要らない。
     - ドロップなどの内部の出来事は出来事の行(6.1 節)に出るので、内部の状態を尋ねる口がなくても困らない。
   - 設定にある機器ごとに、最後に書いた時刻を出す。外した機器のディレクトリは残っている(6.4 節)が、見ない。
@@ -558,13 +583,14 @@ Koitohan は、Detchi がリリースされたら組み込む予定で、組み�
 
     - 判定できないときも 1 にするのは、Docker の `HEALTHCHECK` が 0 を healthy、1 を unhealthy とし、2 を予約済み(使わない)としているため。設定が誤っていれば Detchi は動いていないはずなので、意味も合う。
   - 何も書かない。`<data_dir>` がなくても作らない。
-  - BEAM をもう1つ起動するので、Raspberry Pi では1〜2秒かかる見込み(未計測)。Koitohan のタイムアウト(要求1つに 20 秒)に収まる。
+  - BEAM をもう1つ起動するので、Raspberry Pi では1〜2秒かかる見込み(開発の PC で 0.44 秒。Raspberry Pi は未計測)。Koitohan のタイムアウト(要求1つに 20 秒)に収まる。
   - 同じコマンドを Dockerfile の `HEALTHCHECK` にも使える。入れるかは、利用する側で判断する。
 
 ### 9.6 テスト
 
 - Koitohan のスモークテストでは、問い合わせ先として snmpd のコンテナを立て、Detchi が記録することを確かめることになる。
 - 資格情報がログに出ていないことも、Koitohan の側で確かめる(OpenLDAP の管理者のパスワードと同じ確認)。
+- Detchi 自身のテストでは、SNMP の相手に OTP の `snmpa`(エージェント)をテストの中で立てる。snmpd が要らず、`noSuchObject`、`noSuchInstance`、`tooBig`、community の誤りを手元で起こせる(5 節。spike で確かめた)。
 
 ### 9.7 Koitohan の側の参照先
 
@@ -582,7 +608,6 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
   - `snmpm` が v3 の report PDU をどんな形で返すか(`snmp_report` の行を書くため)。
   - `clock_stepped` の見つけ方。
 - プッシュ型の時刻の扱い(6.1 節。暫定の決め。実機で確かめて考え直す)。
-- `detchi check-config` と `detchi status` の起動の仕方(リリースの `bin/detchi eval` を包むスクリプトにする、など。9.5 節。実装を始めるときに小さく試す)。
 - 将来、配布をコンテナイメージにも広げるか(置き場所と CI が要る。Koitohan は GitHub Actions を Public 化まで保留している)。
 - SNMP のインデックスと実体の対応が変わることへの対処。
   - 長期間記録すると、設定や構成の変更で、インデックス(`ifIndex` など)が指すインターフェースが変わることがある。そうなると、同じ OID の値が途中から別のインターフェースのものになる。
