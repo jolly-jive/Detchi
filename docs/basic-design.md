@@ -46,12 +46,51 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 
 ## 4. 測り方(RTT)
 
-- UDP は NexPinger に準じる。つまり、**確実に応答が期待できる UDP ポートだけ**を対象にする(NexPinger は DNS、NTP、QUIC の要求を送り、何か返ってくるかで測っている)。
-- コードは共有しないので、定義は仕様として本書に書き、「NexPinger の vX.Y.Z の動作に合わせた」と明記する。揃える定義は次の3つ。
-  - 送る要求の中身
-  - 成功の条件
-  - RTT の起点と終点
 - ICMP は、権限の要らない ICMP のソケット(datagram socket)を使う。Docker の既定の `net.ipv4.ping_group_range` で動く。
+- UDP は NexPinger に準じる(4.1 節)。
+
+### 4.1 UDP
+
+**NexPinger v1.4.0 の動作に合わせた。** コードは共有しないので、定義をここに書く(NexPinger の `lib/nexpinger/udp_probe.ex`。2026-10-24 時点の main でも、UDP の測り方は v1.4.0 から変わっていない)。
+
+- **確実に応答が期待できる要求だけ**を送る。設定の `service` で選び、ポートの既定はサービスの標準のポート(7.2 節)。
+
+  | `service` | ポートの既定 | 送る要求 |
+  | --- | --- | --- |
+  | `dns` | 53 | `. SOA` の問い合わせ。RD=0、EDNS なし。17 バイト。 |
+  | `ntp` | 123 | NTPv4 のクライアントの要求(mode 3)。48 バイト。 |
+  | `quic` | 443 | 予約された版(`0x1a2a3a4a`)の long header の Initial。1200 バイトまで埋める。 |
+
+- 要求の中身(バイト列)
+  - `dns`:ヘッダーは、ID(乱数 16 ビット)、フラグはすべて 0(QR=0、OPCODE=0、RD=0)、QDCOUNT=1、ほかの数は 0。質問は、ルートの名前(`0x00`)、QTYPE=6(SOA)、QCLASS=1(IN)。
+    - SOA は応答が小さい(`. NS` はルートサーバー 13 個とグルーで 512 バイトを埋める)。TXT も小さいが、トンネリングの検知に引っかかりやすい。
+    - RD=0 なので、リゾルバーは再帰せず、キャッシュから答えるか断る。RTT にリゾルバーの再帰の時間が入らない。
+    - EDNS を付けないので、応答は 512 バイトに収まり、断片化しない。
+  - `ntp`:先頭のバイトが `0x23`(LI=0、VN=4、Mode=3)、続く 39 バイトが 0、最後の 8 バイト(Transmit Timestamp)が乱数。Transmit Timestamp が 0 の要求を捨てるサーバーがあるため。
+  - `quic`:先頭のバイトが `0xC0`(long header、Initial)、版が `0x1a2a3a4a`、DCID の長さ 8 と乱数 8 バイト、SCID の長さ 8 と乱数 8 バイト、残りは 0 で埋めて全体を 1200 バイトにする。
+    - 版は RFC 9000 の 15 節で予約された形(`0x?a?a?a?a`)なので、サーバーは対応しておらず、Version Negotiation を返す。暗号の処理は要らない。
+    - 1200 バイトより小さい Initial は、サーバーが捨てる(RFC 9000 の 14.1 節)。
+- 送り方
+  - 測るたびに新しいソケットを開き、宛先(`addr` と `port`)に connect してから送る。OS がほかの送り元からの datagram を捨てる。また、前の回への遅れた応答が、次の回の応答と取り違えられることがない。
+  - 再送しない(SNMP と同じ。7.4 節)。
+- 成功の条件
+  - **宛先から UDP の応答が何か1つ返れば `ok`。中身は確かめない。** 目的は届くかを測ることなので、DNS の NXDOMAIN や REFUSED、NTP の Kiss-o'-Death、壊れた応答も `ok`。DNS の ID も照合しない(connect したソケットに、その回だけ開いているため)。
+  - `timeout` の間に応答がなければ `timeout`。
+  - ICMP の Port Unreachable は UDP の応答ではないので `ok` にしない。Linux では、connect した UDP のソケットの受信が `econnrefused` を返す。`status` は `refused`、`error` は `{"reason":"errno","errno":"econnrefused"}`、ネットワークから返ってきたので `rtt_us` も付ける(6.1 節)。TCP の RST を `refused` にするのと揃う。
+    - Port Unreachable は、宛先でなく途中のファイアウォール(iptables の `REJECT` など)が返していることもある。文書に書く。
+  - `ehostunreach`、`enetunreach` などは `status` が `unreachable`(6.1 節の `error` の形)。`rtt_us` は付けない。
+- RTT の起点と終点
+  - 起点は要求を送る直前、終点は最初の応答(または Port Unreachable)を受け取ったとき。サーバーの処理の時間を含む。
+  - 時間は単調な時計(`System.monotonic_time/1`)で測る。行の `ts` は起点と同じ時点の壁時計(6.1 節の「要求を送った時刻」)。
+  - NexPinger は起点を connect の前に取っている。UDP の connect は何も送らないので、違いはシステムコール1回分で、実質は同じ。Detchi では `ts` と意味を揃えるために、送る直前にした。
+  - `timeout` は、送ってから応答を待つ時間。
+- NTP の間隔
+  - 公開の NTP サーバーは、短い間隔の問い合わせを制限する(Kiss-o'-Death を返す、捨てる)。NexPinger は NTP の `interval` の既定を 8 秒にし、それより短いと起動のときに警告している。
+  - Detchi の `interval` の既定は 60 秒で、8 秒より十分長いので、NTP に特別な既定は設けない。
+  - `service` が `ntp` で `interval` が 8 秒より短い測定には、**警告**を出す。
+    - 出す場所は `detchi check-config` の出力と、起動のときの標準出力のログ。警告では止まらない(`check-config` の終了コードも 0)。
+    - 宛先のアドレスによって警告を省くこと(プライベートアドレスなら自分で運用しているとみなす、など)はしない。`host` がホスト名なら、設定を読んだだけではアドレスが分からず、引き直しで変わることもある。また、プライベートアドレスでも自分で運用しているとは限らない(社内の NTP サーバー、プロバイダーの機器など)。警告は起動のときに1行出るだけなので、自分のサーバーなら読み流してもらえばよい。
+    - 自分で運用していないサーバーに 8 秒より短い間隔で問い合わせないよう、文書にも書く。
 
 ## 5. SNMP
 
