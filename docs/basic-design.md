@@ -47,6 +47,11 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 ## 4. 測り方(RTT)
 
 - ICMP は、権限の要らない ICMP のソケット(datagram socket)を使う。Docker の既定の `net.ipv4.ping_group_range` で動く。
+- ICMP と UDP のソケットには、いつも `IP_RECVERR`(IPv6 は `IPV6_RECVERR`)を付ける。
+  - 付けないと、Linux は ICMP の誤りのうち「致命的」とするもの(Port Unreachable など)しかソケットに伝えない。Time Exceeded や、ルーターがよく返す Host Unreachable、Net Unreachable は伝わらず、`timeout` として記録されてしまう(2026-10-24 に、ICMP、ICMPv6、UDP のソケットで確かめた)。
+  - 付ければ、受信がすぐに errno(`ehostunreach` など)を返し、誤りのキュー(`MSG_ERRQUEUE`)から ICMP の type と code、返してきたアドレスが取れる。記録の形は 6.1 節の `reason` が `icmp` のもの。
+  - 誤りのキューの読み方:OTP の `socket:recvmsg/5` に `[errqueue]` を渡すと、制御メッセージ(`ctrl`)に `recverr` が入る。type と code は、OTP が名前に直したもの(`time_exceeded` など。知らない値は数値のまま)ではなく、生のバイト列(`struct sock_extended_err`)から数値で読む。
+  - 手元で ARP が引けないときは、約 3 秒後にカーネルが自分で Host Unreachable を作る。そのとき、返してきたアドレスは自分のアドレスになる。
 - UDP は NexPinger に準じる(4.1 節)。
 
 ### 4.1 UDP
@@ -72,13 +77,15 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
     - 1200 バイトより小さい Initial は、サーバーが捨てる(RFC 9000 の 14.1 節)。
 - 送り方
   - 測るたびに新しいソケットを開き、宛先(`addr` と `port`)に connect してから送る。OS がほかの送り元からの datagram を捨てる。また、前の回への遅れた応答が、次の回の応答と取り違えられることがない。
+  - ソケットには `IP_RECVERR` / `IPV6_RECVERR` を付ける(4 節)。**ここは NexPinger v1.4.0 と違う。** NexPinger は付けていないので、ルーターが Host Unreachable や Time Exceeded を返しても `timeout` になる。
   - 再送しない(SNMP と同じ。7.4 節)。
 - 成功の条件
   - **宛先から UDP の応答が何か1つ返れば `ok`。中身は確かめない。** 目的は届くかを測ることなので、DNS の NXDOMAIN や REFUSED、NTP の Kiss-o'-Death、壊れた応答も `ok`。DNS の ID も照合しない(connect したソケットに、その回だけ開いているため)。
   - `timeout` の間に応答がなければ `timeout`。
-  - ICMP の Port Unreachable は UDP の応答ではないので `ok` にしない。Linux では、connect した UDP のソケットの受信が `econnrefused` を返す。`status` は `refused`、`error` は `{"reason":"errno","errno":"econnrefused"}`、ネットワークから返ってきたので `rtt_us` も付ける(6.1 節)。TCP の RST を `refused` にするのと揃う。
-    - Port Unreachable は、宛先でなく途中のファイアウォール(iptables の `REJECT` など)が返していることもある。文書に書く。
-  - `ehostunreach`、`enetunreach` などは `status` が `unreachable`(6.1 節の `error` の形)。`rtt_us` は付けない。
+  - ICMP の Port Unreachable は UDP の応答ではないので `ok` にしない。`status` は `refused`(TCP の RST を `refused` にするのと揃う)。`error` は `reason` が `icmp` のもの(6.1 節)。
+    - Port Unreachable は、宛先でなく途中のファイアウォール(iptables の `REJECT` など)が返していることもある。`error` の `from` で、どちらが返したかが分かる。文書に書く。
+  - ほかの ICMP の誤り(Host Unreachable、Time Exceeded など)は `status` が `unreachable`。`error` は同じく `reason` が `icmp` のもの。
+  - `rtt_us` を付けるかは 6.1 節の規則による(ICMP がネットワークから届いたときだけ付ける)。
 - RTT の起点と終点
   - 起点は要求を送る直前、終点は最初の応答(または Port Unreachable)を受け取ったとき。サーバーの処理の時間を含む。
   - 時間は単調な時計(`System.monotonic_time/1`)で測る。行の `ts` は起点と同じ時点の壁時計(6.1 節の「要求を送った時刻」)。
@@ -161,7 +168,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 | `port` | TCP、UDP の宛先のポート。 |
 | `status` | `ok`、`timeout`、`unreachable`、`refused`、`error` のどれか。 |
 | `error` | `status` が `ok` でも `timeout` でもないときの理由(形は下を参照)。 |
-| `rtt_us` | 要求を送ってから応答を受けるまでの時間。マイクロ秒の整数。SNMP の行にも付ける。ネットワークから何か返ってきたと分かるときだけ付ける(`ok`、TCP の RST、UDP の port unreachable、SNMP の `errorStatus`)。errno だけで分かる `unreachable` には付けない(ICMP が届いたのか、手元の ARP が失敗したのかを区別できず、その時間は RTT とは限らないため)。 |
+| `rtt_us` | 要求を送ってから応答を受けるまでの時間。マイクロ秒の整数。SNMP の行にも付ける。ネットワークから何か返ってきたと分かるときだけ付ける(`ok`、TCP の RST、ネットワークから届いた ICMP の誤り、SNMP の `errorStatus`)。ICMP の誤りが手元で作られたとき(`error` の `from` が自分のアドレス。ARP が引けなかったときなど)と、`reason` が `errno` の `unreachable` には付けない(その時間は RTT ではないため)。 |
 | `timeout_ms` | `status` が `timeout` のときの、待った時間。 |
 
 - プロトコルに固有の項目は、プロトコルの名前の下に入れ子にする(例の `"snmp":{...}`)。将来 gNMI や NETCONF の項目が増えても、共通の項目とぶつからない。ただし `port` のように RTT で共通に使うものは、入れ子にしない。
@@ -197,6 +204,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 
   ```json
   "error":{"reason":"errno","errno":"ehostunreach"}
+  "error":{"reason":"icmp","type":11,"code":0,"from":"192.0.2.254"}
   "error":{"reason":"snmp","error_status":"genErr","error_index":2}
   "error":{"reason":"snmp_report","oid":"1.3.6.1.6.3.15.1.1.5.0"}
   "error":{"reason":"resolve","errno":"nxdomain"}
@@ -205,7 +213,8 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 
   | `reason` | 場面 | 項目 | `status` |
   | --- | --- | --- | --- |
-  | `errno` | OS のソケットの誤り(TCP の RST、connect の EHOSTUNREACH、UDP の port unreachable、ICMP の Destination Unreachable、手元に経路がない、など) | `errno` | `refused`、`unreachable` |
+  | `errno` | OS のソケットの誤りで、ICMP の詳しいことがないもの(TCP の RST、TCP の connect の EHOSTUNREACH、手元に経路がない、など) | `errno` | `refused`、`unreachable` |
+  | `icmp` | ICMP、UDP の測定に ICMP の誤りが返った(誤りのキューから読めたとき。4 節) | `type`、`code`、`from` | `refused`(Port Unreachable)、`unreachable`(それ以外) |
   | `snmp` | 応答の `errorStatus` が 0 でない | `error_status`、`error_index` | `error` |
   | `snmp_report` | v3 の report PDU が返った(`usmStatsWrongDigests` など) | `oid` | `error` |
   | `resolve` | 名前を一度も引けていない(7.6 節) | `errno` | `error` |
@@ -214,7 +223,13 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 - **自由な文の項目は持たない。** 決まった語と数値だけを書く。ライブラリの誤りの文面や項には何が入るか分からず(7.1 節の `yamerl` の例)、資格情報が漏れうるため。`internal` の詳しいことは、資格情報を除いて標準出力のログにだけ書く。
   - NexPinger は、よく出る理由を英語の文(`connection refused` など)に直し、それ以外は `inspect(reason)` をそのまま書いている。NexPinger には資格情報がないのでそれで困らないが、Detchi では同じことができない。また、5 年分を機械的に絞るには、文より決まった語のほうが扱いやすい。
 - `errno` は、Erlang が返す errno の名前をそのまま書く(`econnrefused`、`ehostunreach`、`enetunreach` など。NexPinger のように文には直さない。対象は Linux だけなので、OS による違いを吸収しなくてよい)。名前解決の誤り(`nxdomain` など)も、`:inet.getaddr` が返す名前をそのまま書く。
-- ICMP は NexPinger と同じく、ソケットを connect して、Destination Unreachable をソケットの誤り(errno)として受ける。ICMP の type と code、返してきたルーターのアドレスは、最初は書かない。`IP_RECVERR` で取れると確かめられたら、`reason` に `icmp` を足す。
+- `icmp` の項目
+  - `type` と `code` は ICMP の type と code の数値。ICMPv4 と ICMPv6 で番号の体系が違う(Time Exceeded は v4 で 11、v6 で 3)ので、`addr` の形でどちらかを読み分ける。名前に直さないのは、数値なら知らない値も失わずに残せるため(5 節の OID と同じ考え)。
+  - `from` は ICMP の誤りを返してきたアドレス(`addr` と同じく、IPv6 は RFC 5952 の正規形)。宛先、途中のルーター、ファイアウォール、自分(ARP が引けなかったときなど)のどれもありうる。
+  - 自分のアドレスかどうかは、connect したソケットの送り元のアドレス(`socket:sockname/1`)と比べて決める(`rtt_us` を付けるかの判断。上の表)。
+  - `status` は、Port Unreachable(v4 は type 3 code 3、v6 は type 1 code 4)なら `refused`、それ以外は `unreachable`。
+  - ICMP の誤りでも誤りのキューが空なら(想定していないが)、`reason` は `errno` で書く。
+- ARP が引けないときの Host Unreachable は約 3 秒後に来るので、`timeout` が既定の 1 秒なら、先に `timeout` になる。
 - `snmp` の `error_status` は RFC 3416 の名前(`tooBig`、`genErr` など。varbinds の `type` と同じく RFC の綴り)。`error_index` は1から始まり、設定の `oids` の順を指す。この行には `varbinds` を書かない(誤りのときの値は意味を持たない)。
 - `snmp_report` の `oid` は、report PDU に入っていた `usmStats*` などの OID を数値で書く(5 節の方針と同じ。名前にはしない)。応答が返ってきているので `rtt_us` も付ける。`snmpm` がこの報告をどんな形で返すかは、v3 を実装するときに確かめる。
 - `timeout` のときは `error` を書かず、`timeout_ms` を書く。
@@ -564,7 +579,6 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
 - 設定ファイルの細部(7 節のたたき台の残り)。
   - v3 の資格情報の項目と、選べる認証と暗号の方式。
 - スキーマの細部(6.1 節)。
-  - ICMP の type と code を `IP_RECVERR` で取れるか(取れれば `reason` に `icmp` を足す)。
   - `snmpm` が v3 の report PDU をどんな形で返すか(`snmp_report` の行を書くため)。
   - `clock_stepped` の見つけ方。
 - プッシュ型の時刻の扱い(6.1 節。暫定の決め。実機で確かめて考え直す)。
