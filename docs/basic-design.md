@@ -60,6 +60,65 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
     - 実行には Erlang/OTP 28 以上が要る(escript は ERTS を含まない)。先頭の行は `#! /usr/bin/env escript` なので、`escript` が `PATH` にあること。
     - escript は `priv` を扱えないが、Detchi は `priv` を使わない。`config/runtime.exs` も使えないが、設定は YAML と環境変数なので要らない。
 
+### 3.1 プロセスの構成(案)
+
+`detchi run` で動くプロセス(アクター)の構成。実装しながら見直す。残っている点は 10 節。
+
+監督ツリー:
+
+```mermaid
+flowchart TD
+  snmp["snmp アプリケーション(snmpm)<br/>Detchi より先に起動"]
+  sup["Detchi.Supervisor"]
+  reg["Registry<br/>機器の名前 → pid"]
+  hk["Housekeeper<br/>前日分の圧縮、保持期間の削除"]
+  clk["Clock<br/>壁時計の跳びを見る"]
+  tsup["Targets<br/>one_for_one"]
+  t1["Target core1<br/>rest_for_one"]
+  w1["Writer core1<br/>ファイル、日の切り替え、ドロップ"]
+  r1["Resolver core1<br/>名前の引き直し、snmpm への登録"]
+  ps1["Probes core1<br/>one_for_one"]
+  p1["Probe ping"]
+  p2["Probe if-uplink"]
+
+  sup --> reg & hk & clk & tsup
+  tsup --> t1
+  t1 --> w1 --> r1 --> ps1
+  ps1 --> p1 & p2
+```
+
+メッセージの流れ:
+
+```mermaid
+flowchart LR
+  probe["Probe<br/>間隔と位相を持つ"] -. "1回ごとに起動" .-> att["Attempt(Task)<br/>送って待つ"]
+  att -- "結果" --> probe
+  att -- "sync_get2" --> snmpm["snmpm"]
+  probe -- "測定の行" --> writer["Writer"]
+  resolver["Resolver"] -- "resolve_failed<br/>addr_changed" --> writer
+  resolver -- "現在の addr" --> probe
+  clock["Clock"] -- "clock_stepped<br/>(全機器へ)" --> writer
+  writer -- "閉じたファイル" --> hk["Housekeeper"]
+```
+
+- `snmp` アプリケーションは、`snmpm` の設定を書き出してから、Detchi のアプリケーションより先に起動する(3 節、5 節)。Detchi の監督ツリーの外にある。
+  - タイムアウトの後に届いた応答を捨てる user のモジュール(`handle_pdu/4`。5 節)は、Detchi のプロセスではなく、`snmpm` のプロセスの中で呼ばれる。
+- **機器ごとに Writer を1つ置く。** 機器のファイルに書くのは Writer だけ。
+  - 出来事の行を機器ごとのファイルに書き、背圧によるドロップも機器ごとの書き込みで起きる(6.1 節)ので、それに合わせた。
+  - 日の切り替え、前日のファイルを開いておくこと、`file_opened` の行(6.2 節)も Writer が受け持つ。前日のファイルを閉じたら Housekeeper に知らせる。
+- **機器の中は `rest_for_one` で、Writer、Resolver、Probes の順に並べる。**
+  - Resolver と Probe は Writer に書かせるので、Writer が先に要る。Probe は Resolver のアドレスを使う。
+  - 止まるときは逆の順になるので、Probe が先に止まり、結果を待たずに打ち切った要求の数を Writer に渡す。最後に Writer が `stop` の行(`abandoned`)を書いてファイルを閉じる(7.9 節)。
+  - Probe は、互いに巻き込まないように、1段下の `one_for_one` の監督の下に置く。
+- **Resolver も機器ごとに1つ置く。** `host` が IP アドレスでも置き、アドレスを持つだけにする(機器による違いを Probe に見せない)。
+  - アドレスが変わったら、`snmpm` に機器を登録し直す(`snmpm:register_agent/3` はアドレスで登録するため。5 節)。
+- **Probe(測定ごとに1つ)と Attempt(1回の要求ごとに1つ)を分ける。**
+  - Probe は、間隔と測る時刻の分散(7.5 節)を受け持ち、待たない。送って待つのは Attempt(`Task`)で、`recv` や `sync_get2` で待っている間も、Probe の時刻の管理が止まらない。
+  - `timeout` は `interval` より短い(7.3 節)ので、待っている Attempt は Probe ごとに多くて1つ。打ち切った数は、Attempt が残っている Probe の数になる。
+- **Housekeeper はシステム全体で1つ。** Raspberry Pi で圧縮が一度に重ならないように。
+  - 起動のときの片付け(過ぎた日の `.jsonl` の圧縮、`.part` の削除。6.2 節)と、保持期間を過ぎたものの削除(6.4 節)も受け持つ。
+- **Clock もシステム全体で1つ。** 壁時計が跳んだら、Registry で全機器の Writer を引き、`clock_stepped` の行(6.1 節)を書かせる。
+
 ## 4. 測り方(RTT)
 
 - ICMP は、権限の要らない ICMP のソケット(datagram socket)を使う。Docker の既定の `net.ipv4.ping_group_range` で動く。
@@ -623,6 +682,11 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
 - スキーマの細部(6.1 節)。
   - `snmpm` が v3 の report PDU をどんな形で返すか(`snmp_report` の行を書くため)。
   - `clock_stepped` の見つけ方。
+- プロセスの構成の細部(3.1 節)。
+  - `start` の行の `addr`:Writer は Resolver より先に起動するが、`start` の行にはその時点のアドレスを書く(6.1 節)。Writer が Resolver の最初の結果(引けたか、引けなかったか)を受け取ってから `start` を書く形が自然そう。
+  - Probe がアドレスを得る方法:測るたびに Resolver に尋ねる、Resolver が Probe に配る、ETS に置く、のどれにするか。
+  - ドロップを判断する場所:Writer がディスクで詰まると、自分のメールボックスを捌けない。送る側で Writer のキューの長さを見て落とし、落とした数をカウンター(`atomics` など)で Writer に伝える形が考えられる。`dropped` の `first_ts` と `last_ts` も同じように渡す。
+  - Writer が落ちて起動し直したとき:もう一度 `start` を書くか、別の出来事にするか。`rest_for_one` なので、その機器の Resolver と Probe も起動し直す。
 - プッシュ型の時刻の扱い(6.1 節。暫定の決め。実機で確かめて考え直す)。
 - 将来、配布をコンテナイメージにも広げるか(置き場所と CI が要る。Koitohan は GitHub Actions を Public 化まで保留している)。
 - SNMP のインデックスと実体の対応が変わることへの対処。
