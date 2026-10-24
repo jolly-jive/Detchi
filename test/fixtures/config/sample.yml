@@ -1,0 +1,44 @@
+# The sample of docs/basic-design.md, 7.2, without the v3 profile.
+data_dir: /var/lib/detchi
+retention_days: 1827
+compression: gzip
+resolve_interval: 5m
+
+defaults:
+  interval: 60s
+  timeout: 1s
+  snmp_timeout: 5s
+
+credentials:
+  campus-v2c: { version: v2c, community: "s3cr3t-community" }
+
+x-switch-probes: &switch
+  - { name: ping, protocol: icmp }
+  - { name: ssh,  protocol: tcp, port: 22 }
+
+targets:
+  - name: core1
+    host: 192.0.2.1
+    family: auto
+    snmp:
+      credential: campus-v2c
+      port: 161
+    probes:
+      - name: ping
+        protocol: icmp
+      - name: ssh
+        protocol: tcp
+        port: 22
+      - name: dns
+        protocol: udp
+        service: dns
+      - name: if-uplink
+        protocol: snmp
+        interval: 300s
+        timeout: 5s
+        oids:
+          - 1.3.6.1.2.1.1.3.0
+          - 1.3.6.1.2.1.31.1.1.1.1.1
+          - 1.3.6.1.2.1.31.1.1.1.6.1
+  - { name: sw1, host: sw1.example.net, probes: *switch }
+  - { name: sw2, host: "2001:db8::12", family: ipv6, probes: *switch }
