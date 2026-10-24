@@ -82,7 +82,8 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
   - 行に付ける時刻は、**Detchi の時計で、観測を始めた時刻**にする。
     - ポーリング(ICMP、TCP、UDP、SNMP)では、要求を送った時刻(RTT と SNMP で同じ意味にするため)。
     - 将来のプッシュ型(NETCONF の通知、gNMI の Subscribe)では、受け取った時刻。機器の付けた時刻(`eventTime`、`timestamp`)は、プロトコルの入れ子に生のまま入れる。機器の時計はずれることがあり、NETCONF の replay や gNMI のつなぎ直しでは古い時刻のものがまとめて届くため。暫定の決めで、実機で確かめてから考え直す。
-  - マイクロ秒まで書く(同じ機器への測定が同じ秒に重なっても、順序が分かるように)。
+  - マイクロ秒まで書く(同じ機器への測定が同じ秒に重なっても、順序が分かるように)。秒の小数はいつも 6 桁。
+  - オフセットはいつも数字で書く。`TZ=UTC` でも `Z` ではなく `+00:00`。書き方が混ざらず、文字列のまま並べるときにも都合がよい。
 
 #### スキーマ(たたき台)
 
@@ -93,7 +94,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 ```json
 {"v":1,"ts":"2026-10-23T21:00:00.123456+09:00","target":"core1","probe":"ping","protocol":"icmp","addr":"192.0.2.1","status":"ok","rtt_us":1234}
 {"v":1,"ts":"2026-10-23T21:01:00.120001+09:00","target":"core1","probe":"ping","protocol":"icmp","addr":"192.0.2.1","status":"timeout","timeout_ms":1000}
-{"v":1,"ts":"2026-10-23T21:00:00.130000+09:00","target":"core1","probe":"dns","protocol":"udp","addr":"192.0.2.1","port":53,"status":"ok","rtt_us":2345}
+{"v":1,"ts":"2026-10-23T21:00:00.130000+09:00","target":"core1","probe":"dns","protocol":"udp","addr":"192.0.2.1","port":53,"status":"ok","rtt_us":2345,"udp":{"service":"dns"}}
 {"v":1,"ts":"2026-10-23T21:00:00.135000+09:00","target":"core1","probe":"ssh","protocol":"tcp","addr":"192.0.2.1","port":22,"status":"refused","rtt_us":456,"error":{"reason":"errno","errno":"econnrefused"}}
 {"v":1,"ts":"2026-10-23T21:00:00.140000+09:00","target":"core1","probe":"if-uplink","protocol":"snmp","addr":"192.0.2.1","status":"ok","rtt_us":5678,
  "snmp":{"version":"v2c","op":"get","varbinds":[
@@ -117,7 +118,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 | --- | --- |
 | `probe` | 設定に付けた測定の名前。 |
 | `protocol` | `icmp`、`tcp`、`udp`、`snmp`。将来は `gnmi`、`netconf` も入る。 |
-| `addr` | 実際に送った宛先の IP アドレス(名前ではない。DNS の答えが変わっても、何を測ったかが分かるように)。 |
+| `addr` | 実際に送った宛先の IP アドレス(名前ではない。DNS の答えが変わっても、何を測ったかが分かるように)。IPv6 は RFC 5952 の正規形(英小文字で、ゼロを省略する形)。 |
 | `port` | TCP、UDP の宛先のポート。 |
 | `status` | `ok`、`timeout`、`unreachable`、`refused`、`error` のどれか。 |
 | `error` | `status` が `ok` でも `timeout` でもないときの理由(形は下を参照)。 |
@@ -125,16 +126,31 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 | `timeout_ms` | `status` が `timeout` のときの、待った時間。 |
 
 - プロトコルに固有の項目は、プロトコルの名前の下に入れ子にする(例の `"snmp":{...}`)。将来 gNMI や NETCONF の項目が増えても、共通の項目とぶつからない。ただし `port` のように RTT で共通に使うものは、入れ子にしない。
+- UDP の行には、送った要求の種類(設定の `service`)を `"udp":{"service":"dns"}` と書く。ポートの既定を変えたとき(5353 で `dns` を送る、など)にも、何を送ったかが行から分かるように。設定の指紋(7.9 節)にも含まれるが、指紋は人が読めない。
 - SNMP の値(`varbinds`)
   - OID をキーにしたオブジェクトではなく、配列にする。要求した順序が残り、GetBulk や walk で同じ形を使える。
   - `type` には SNMP の型(`Integer`、`OctetString`、`ObjectIdentifier`、`IpAddress`、`Counter32`、`Gauge32`、`TimeTicks`、`Opaque`、`Counter64`)を書く。`noSuchObject`、`noSuchInstance`、`endOfMibView` の例外もここに書き、`value` は書かない。例外があっても、要求全体の `status` は `ok` のまま。
-  - OctetString は、UTF-8 として読めて印字できるものは `value` に文字列で書く。そうでないもの(MAC アドレスなど)は `hex` に16進で書く。どちらで書いたかは項目の名前で分かる。
+  - 型ごとの `value` の形
+    - `Integer`、`Counter32`、`Gauge32`、`TimeTicks`、`Counter64`:数値(`Integer` は負の数もある)。
+    - `ObjectIdentifier`:点で区切った文字列(`"1.3.6.1.2.1.2.2.1.1"`)。
+    - `IpAddress`:点で区切った文字列(`"192.0.2.1"`)。
+    - `Opaque`:いつも `hex` に書く。
+  - OctetString は、正しい UTF-8 で、制御文字が `\t`、`\n`、`\r` だけのものは `value` に文字列で書く。そうでないもの(MAC アドレス、NUL や DEL などほかの制御文字を含むもの)は `hex` に書く。どちらで書いたかは項目の名前で分かる。
+    - 改行を含む `sysDescr`(Cisco などでよくある)が文字列で読めるように、`\t`、`\n`、`\r` は許す。JSON では `\n` などに逃がされるので、1行に収まる。
+    - 末尾に NUL を付ける機器もあるが、それも `hex` にする。元の値を正確に残すため。
+  - `hex` は英小文字の16進で、区切りを入れない(`"001122aabbcc"`)。
   - **Counter64 も数値で書く**(文字列にしない)。
     - jq 1.7 以上は数値を書かれたとおりに保つので、そのまま出力する(`select` で絞る、など)ときと、比べるときは正確。文字列にしても、jq で計算するには `tonumber` が要り、精度は同じように落ちるので、利点がない。
     - 計算すると double(IEEE 754)になり、2^53 を超えた部分の精度は落ちる。jq 1.7 で確かめた例:`18446744073709551615 - 1` は `18446744073709552000`、`9007199254740993 - 9007199254740992` は `0`。
     - バイトのカウンターが 2^53 に届くのは、100Gbps で流し続けて約 8 日、10Gbps で約 83 日、1Gbps で約 2.3 年。ただし差分の誤差は、2^64 の近くでも1回あたり最大 2048 なので、レートの計算にはまず効かない。等しいかの判定や一周の判定のように正確さが要るときは、Python などの任意精度の言語で扱う。これを利用者向けの文書に書く。
 - 資格情報に当たるもの(community、v3 のユーザーや鍵)は行に入れない。資格情報のプロファイルの名前も入れない(要らないので)。
 - 名前を一度も引けていない機器(7.6 節)の行には、`addr` を書かない。`status` は `error`、`error` の `reason` は `resolve`。
+
+版(`v`)とキーの順序:
+
+- 項目を足すだけなら `v` を上げない。読む側は知らない項目を無視するものとする。項目の意味を変える、項目を消す、型を変えるときだけ上げる。5 年分を読む道具が、版ごとの違いを扱えるように。利用者向けの文書に書く。
+- キーの順序は固定する。共通の項目(`v`、`ts`、`target`)を先に、次に `probe` か `event`、`protocol`、と例のとおりに並べ、プロトコルの入れ子は最後に置く。`zgrep` で人が読むときに楽なので。
+  - JSON は OTP 標準の `json` モジュールで書く(OTP 28 以上を要求しているので使える。依存を増やさない)。`json:encode/1` にマップを渡すとキーの順序は不定になる(OTP 29 で `{"addr":"x","v":1,"ts":"t","target":"a"}` になった)。`json:encode_key_value_list/2` を使えば、並べた順で出ることを確かめた。
 
 `error` の形:
 
@@ -143,6 +159,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
   ```json
   "error":{"reason":"errno","errno":"ehostunreach"}
   "error":{"reason":"snmp","error_status":"genErr","error_index":2}
+  "error":{"reason":"snmp_report","oid":"1.3.6.1.6.3.15.1.1.5.0"}
   "error":{"reason":"resolve","errno":"nxdomain"}
   "error":{"reason":"internal"}
   ```
@@ -151,6 +168,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
   | --- | --- | --- | --- |
   | `errno` | OS のソケットの誤り(TCP の RST、connect の EHOSTUNREACH、UDP の port unreachable、ICMP の Destination Unreachable、手元に経路がない、など) | `errno` | `refused`、`unreachable` |
   | `snmp` | 応答の `errorStatus` が 0 でない | `error_status`、`error_index` | `error` |
+  | `snmp_report` | v3 の report PDU が返った(`usmStatsWrongDigests` など) | `oid` | `error` |
   | `resolve` | 名前を一度も引けていない(7.6 節) | `errno` | `error` |
   | `internal` | 想定していない失敗 | なし | `error` |
 
@@ -159,6 +177,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 - `errno` は、Erlang が返す errno の名前をそのまま書く(`econnrefused`、`ehostunreach`、`enetunreach` など。NexPinger のように文には直さない。対象は Linux だけなので、OS による違いを吸収しなくてよい)。名前解決の誤り(`nxdomain` など)も、`:inet.getaddr` が返す名前をそのまま書く。
 - ICMP は NexPinger と同じく、ソケットを connect して、Destination Unreachable をソケットの誤り(errno)として受ける。ICMP の type と code、返してきたルーターのアドレスは、最初は書かない。`IP_RECVERR` で取れると確かめられたら、`reason` に `icmp` を足す。
 - `snmp` の `error_status` は RFC 3416 の名前(`tooBig`、`genErr` など。varbinds の `type` と同じく RFC の綴り)。`error_index` は1から始まり、設定の `oids` の順を指す。この行には `varbinds` を書かない(誤りのときの値は意味を持たない)。
+- `snmp_report` の `oid` は、report PDU に入っていた `usmStats*` などの OID を数値で書く(5 節の方針と同じ。名前にはしない)。応答が返ってきているので `rtt_us` も付ける。`snmpm` がこの報告をどんな形で返すかは、v3 を実装するときに確かめる。
 - `timeout` のときは `error` を書かず、`timeout_ms` を書く。
 
 出来事の行:
@@ -181,7 +200,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
   | `dropped` | `count`、`first_ts`、`last_ts` | ドロップが収まって書けるようになったとき、まとめて1行。`first_ts` と `last_ts` は落とした行の `ts` の範囲。 |
   | `resolve_failed` | `host`、`error`、`addr` | 引き直しに失敗するたびに書く。`error` の `reason` は `resolve`。`addr` は使い続けているアドレス。 |
   | `addr_changed` | `host`、`old`、`new` | 引き直したアドレスが変わったとき。初めて引けたときは `old` を省く。 |
-  | `clock_stepped` | `offset_us` | 壁時計が大きく跳んだとき(単調な時計と比べて見つける)。chrony が時刻を合わせる前に起動すると `ts` が跳ぶので、その説明になる。閾値は未決。 |
+  | `clock_stepped` | `offset_us` | 壁時計が大きく跳んだとき(単調な時計と比べて見つける)。chrony が時刻を合わせる前に起動すると `ts` が跳ぶので、その説明になる。閾値は 1 秒(chrony が少しずつ寄せる調整は拾わず、跳んだときだけ書く)。見つけ方(`erlang:monitor(time_offset, clock_service)` を使うか、定期的に比べるか)は、実装のときに試す。 |
 
   ```json
   {"v":1,"ts":"2026-10-23T21:00:00.000000+09:00","target":"core1","event":"start","version":"0.1.0","config_hash":"sha256:3f9a...","addr":"192.0.2.1"}
@@ -506,9 +525,9 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
 - 設定ファイルの細部(7 節のたたき台の残り)。
   - v3 の資格情報の項目と、選べる認証と暗号の方式。
 - スキーマの細部(6.1 節)。
-  - v3 の report PDU(`usmStatsWrongDigests` など)を `error` でどう書くか(`reason` に `snmp_report` を足す、など)。
   - ICMP の type と code を `IP_RECVERR` で取れるか(取れれば `reason` に `icmp` を足す)。
-  - `clock_stepped` を書く閾値。
+  - `snmpm` が v3 の report PDU をどんな形で返すか(`snmp_report` の行を書くため)。
+  - `clock_stepped` の見つけ方。
 - プッシュ型の時刻の扱い(6.1 節。暫定の決め。実機で確かめて考え直す)。
 - `detchi check-config` と `detchi status` の起動の仕方(リリースの `bin/detchi eval` を包むスクリプトにする、など。9.5 節。実装を始めるときに小さく試す)。
 - 将来、配布をコンテナイメージにも広げるか(置き場所と CI が要る。Koitohan は GitHub Actions を Public 化まで保留している)。
