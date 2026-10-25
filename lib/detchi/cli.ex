@@ -17,6 +17,8 @@ defmodule Detchi.CLI do
   Commands:
     run            Run as a service, recording measurements
     check-config   Check the config file and exit
+      --fingerprints   Also print the config fingerprint of each target
+                       and the canonical JSON it is taken of
 
   Options:
     -h, --help     Show this help
@@ -37,6 +39,9 @@ defmodule Detchi.CLI do
 
       ["check-config"] ->
         CheckConfig.run()
+
+      ["check-config", "--fingerprints"] ->
+        CheckConfig.run(fingerprints: true)
 
       [help] when help in ["-h", "--help"] ->
         IO.write(@usage)

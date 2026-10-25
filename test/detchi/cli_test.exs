@@ -39,6 +39,9 @@ defmodule Detchi.CLITest do
             ["frobnicate"],
             ["check-config", "extra"],
             ["check-config", "--quiet"],
+            ["check-config", "--fingerprints", "extra"],
+            ["--fingerprints", "check-config"],
+            ["run", "--fingerprints"],
             ["run", "x"]
           ] do
         assert {2, "", "Usage: detchi <command>" <> _} = run(argv), inspect(argv)
@@ -83,6 +86,31 @@ defmodule Detchi.CLITest do
                "#{path}:1:14: error: compression: must be one of: gzip, zstd\n" <>
                  "#{path}:2:10: error: targets: must not be empty\n" <>
                  "#{path}: 2 errors\n"
+    end
+
+    test "--fingerprints prints the fingerprint and canonical JSON of each target" do
+      System.put_env("DETCHI_CONFIG", @sample)
+      assert {0, stdout, ""} = run(["check-config", "--fingerprints"])
+
+      {:ok, config, []} = Detchi.Config.load(@sample)
+
+      expected =
+        Enum.map(config.targets, fn target ->
+          "#{target.name} #{Detchi.Config.Fingerprint.hash(target)}\n" <>
+            "#{target.name} #{Detchi.Config.Fingerprint.canonical(target)}\n"
+        end)
+
+      assert stdout == Enum.join(expected) <> "#{@sample}: ok (3 targets, 8 probes)\n"
+      assert stdout =~ ~r/^sw1 sha256:[0-9a-f]{64}$/m
+      refute stdout =~ "s3cr3t-community"
+    end
+
+    test "--fingerprints prints nothing more when the config has errors", %{tmp_dir: dir} do
+      path = Path.join(dir, "detchi.yml")
+      File.write!(path, "targets: []\n")
+      System.put_env("DETCHI_CONFIG", path)
+
+      assert run(["check-config", "--fingerprints"]) == run(["check-config"])
     end
 
     test "does not start the application" do
