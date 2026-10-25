@@ -95,8 +95,9 @@ flowchart LR
   att -- "結果" --> probe
   att -- "sync_get2" --> snmpm["snmpm"]
   probe -- "測定の行" --> writer["Writer"]
-  resolver["Resolver"] -- "resolve_failed<br/>addr_changed" --> writer
-  resolver -- "現在の addr" --> probe
+  resolver["Resolver"] -- "start(同期)<br/>resolve_failed<br/>addr_changed" --> writer
+  resolver -- "addr" --> ets[("ETS<br/>機器の名前 → addr")]
+  ets -. "測るたびに読む" .-> probe
   clock["Clock"] -- "clock_stepped<br/>(全機器へ)" --> writer
   writer -- "閉じたファイル" --> hk["Housekeeper"]
 ```
@@ -112,6 +113,16 @@ flowchart LR
   - Probe は、互いに巻き込まないように、1段下の `one_for_one` の監督の下に置く。
 - **Resolver も機器ごとに1つ置く。** `host` が IP アドレスでも置き、アドレスを持つだけにする(機器による違いを Probe に見せない)。
   - アドレスが変わったら、`snmpm` に機器を登録し直す(`snmpm:register_agent/3` はアドレスで登録するため。5 節)。
+- **Probe はアドレスを ETS から読む。** システム全体で1つの表に、機器の名前ごとに、使うアドレスか、一度も引けていないこと(`{:unresolved, errno}`)を入れる。
+  - 書くのは Resolver だけで、Probe は測るたびに読む。Probe は Resolver に call しないので、Resolver が名前解決で待っている間も Probe は止まらない。Resolver が Probe の pid を知る必要もない。
+  - 引き直しに失敗しても、表のアドレスは書き換えない(前のアドレスで測り続ける。7.6 節)。`{:unresolved, errno}` になるのは、起動してから一度も引けていないときだけ。引けなかった理由は Resolver が自分の状態に持ち、`resolve_failed` の行に書く。
+  - 表は、落ちないプロセスが持つ(`Application.start/2` で作る)。Resolver が起動し直しても消えない。
+- **`start` の行は、どの測定の行よりも先に来るようにする。**
+  - Resolver は、最初の名前解決を `init` ではなく `handle_continue` で行う。引けない機器が、ほかの機器の起動を待たせないように。
+  - 最初の結果が出たら(引けなくても)、Resolver は Writer に同期の call で `start`(その時点のアドレス。引けていなければなし)を渡し、Writer が `start` の行を書いて返してから、表に入れる。
+  - Probe は、表に機器がまだなければ、その回は測らず、行も書かない。
+  - こうすると、`start` の行が先に来ることが、メッセージの届く順に頼らずに決まる。起動のときに測らないのは、最初の名前解決が終わるまでだけ。
+  - 引き直しの結果(`resolve_failed`、`addr_changed`)は cast でよい。測定の行と前後してもかまわない。
 - **Probe(測定ごとに1つ)と Attempt(1回の要求ごとに1つ)を分ける。**
   - Probe は、間隔と測る時刻の分散(7.5 節)を受け持ち、待たない。送って待つのは Attempt(`Task`)で、`recv` や `sync_get2` で待っている間も、Probe の時刻の管理が止まらない。
   - `timeout` は `interval` より短い(7.3 節)ので、待っている Attempt は Probe ごとに多くて1つ。打ち切った数は、Attempt が残っている Probe の数になる。
@@ -507,6 +518,8 @@ targets:
   - 測るたびに引くと、DNS が止まったときに、機器が生きていてもすべての測定が失敗する。測りたいのは機器であって DNS ではない。
 - 引き直しに失敗したら、前のアドレスで測り続ける。失敗とアドレスの変化は、出来事の行(`resolve_failed`、`addr_changed`)に書く。測定の行には実際に送った `addr` があるので、何を測ったかは後から分かる。
 - 起動のときに一度も引けなかった機器は、起動を止めずに(DNS が1つ止まっただけで全体が動かなくならないように)、`status` が `error` の行を書きながら引けるまで再試行する。その行には `addr` を書かない(6.1 節)。
+  - 前の起動で使っていたアドレスは使わない。DNS が止まっている間に起動すると、DNS が戻るまで測れないが、それは受け入れる。
+  - 記録のいちばん新しいファイルから前のアドレスを拾い、引けるまで仮に使う案も考えた。設定の `host` を書き換えたあとに古いアドレスを拾わないよう、`start` の行に `host` を足して一致を確かめる必要があり、採らなかった。
 - TTL には従わない。Erlang の普通の名前解決(`:inet.getaddr`。`/etc/hosts` も見る)は TTL を返さず、TTL を返す `inet_res` は `/etc/hosts` を見ないため。
 
 ### 7.7 同じ測定の繰り返し
@@ -691,8 +704,6 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
   - `snmpm` が v3 の report PDU をどんな形で返すか(`snmp_report` の行を書くため)。
   - `clock_stepped` の見つけ方。
 - プロセスの構成の細部(3.1 節)。
-  - `start` の行の `addr`:Writer は Resolver より先に起動するが、`start` の行にはその時点のアドレスを書く(6.1 節)。Writer が Resolver の最初の結果(引けたか、引けなかったか)を受け取ってから `start` を書く形が自然そう。
-  - Probe がアドレスを得る方法:測るたびに Resolver に尋ねる、Resolver が Probe に配る、ETS に置く、のどれにするか。
   - ドロップを判断する場所:Writer がディスクで詰まると、自分のメールボックスを捌けない。送る側で Writer のキューの長さを見て落とし、落とした数をカウンター(`atomics` など)で Writer に伝える形が考えられる。`dropped` の `first_ts` と `last_ts` も同じように渡す。
   - Writer が落ちて起動し直したとき:もう一度 `start` を書くか、別の出来事にするか。`rest_for_one` なので、その機器の Resolver と Probe も起動し直す。
 - プッシュ型の時刻の扱い(6.1 節。暫定の決め。実機で確かめて考え直す)。
