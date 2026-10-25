@@ -679,6 +679,11 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
 
 - 設定ファイルの細部(7 節のたたき台の残り)。
   - v3 の資格情報の項目と、選べる認証と暗号の方式。
+  - 受け継いだ値が誤りになったときの文(7.1 節)。今の文でも原因はたどれるので、急がない。
+    - 値そのものの誤り(`defaults.interval: abc` など)は、書いた場所で1回だけ出る。困るのは、フィールドにまたがる確かめ(`timeout` < `interval`、NTP の `interval` の警告)が、`defaults` や組み込みの既定値から受け継いだ値で引っかかる場合。
+    - たとえば `defaults.interval: 1s` とすると、`timeout` も `interval` も書いていない測定ごとに `timeout must be shorter than interval` が出る(サンプルでは 7 件)。位置は測定そのものを指し、原因の `defaults` は一度も出てこない(2026-10-25 に確かめた)。
+    - 案:既定値を埋めるときに、値の出どころ(測定、`defaults` の位置、組み込み)も持つ。引っかかった値がすべて `defaults` から来ていれば、`defaults` の側で1回だけ出し、測定ごとには出さない。混ざっていれば測定の側で出し、文に出どころを書く(`timeout (1s, from defaults.timeout on line 9)` など)。ミリ秒の数と行番号は Detchi が作った値なので、ファイルの文字列を引かない決まりに反しない。
+    - YAML のエイリアス(`*switch` など)で使い回した測定の誤りは、アンカーの位置を指すので、同じ位置が `targets[1]` と `targets[2]` で2回出る。エイリアスの位置も示すには、`yamerl_constr` が返す木にはエイリアスの情報が残らないので、パーサーのトークンを見る別の作業が要る。
 - スキーマの細部(6.1 節)。
   - `snmpm` が v3 の report PDU をどんな形で返すか(`snmp_report` の行を書くため)。
   - `clock_stepped` の見つけ方。
