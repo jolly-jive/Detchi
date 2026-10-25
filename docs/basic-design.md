@@ -246,24 +246,27 @@ flowchart LR
 | --- | --- |
 | `probe` | 設定に付けた測定の名前。 |
 | `protocol` | `icmp`、`tcp`、`udp`、`snmp`。将来は `gnmi`、`netconf` も入る。 |
-| `addr` | 実際に送った宛先の IP アドレス(名前ではない。DNS の答えが変わっても、何を測ったかが分かるように)。IPv6 は RFC 5952 の正規形(英小文字で、ゼロを省略する形)。 |
+| `addr` | 実際に送った宛先の IP アドレス(名前ではない。DNS の答えが変わっても、何を測ったかが分かるように)。IPv6 は RFC 5952 の正規形(英小文字で、ゼロを省略する形)。末尾を点で区切って書くのは IPv4 射影(`::ffff:192.0.2.1`)だけで、廃止された IPv4 互換(`::/96`)は16進で書く(`::c000:201`。`:inet.ntoa` は `::192.0.2.1` と書くので使わない)。 |
 | `port` | TCP、UDP の宛先のポート。 |
 | `status` | `ok`、`timeout`、`unreachable`、`refused`、`error` のどれか。 |
-| `error` | `status` が `ok` でも `timeout` でもないときの理由(形は下を参照)。 |
 | `rtt_us` | 要求を送ってから応答を受けるまでの時間。マイクロ秒の整数。SNMP の行にも付ける。ネットワークから何か返ってきたと分かるときだけ付ける(`ok`、TCP の RST、ネットワークから届いた ICMP の誤り、SNMP の `errorStatus`)。ICMP の誤りが手元で作られたとき(`error` の `from` が自分のアドレス。ARP が引けなかったときなど)と、`reason` が `errno` の `unreachable` には付けない(その時間は RTT ではないため)。 |
 | `timeout_ms` | `status` が `timeout` のときの、待った時間。 |
+| `error` | `status` が `ok` でも `timeout` でもないときの理由(形は下を参照)。 |
 
 - プロトコルに固有の項目は、プロトコルの名前の下に入れ子にする(例の `"snmp":{...}`)。将来 gNMI や NETCONF の項目が増えても、共通の項目とぶつからない。ただし `port` のように RTT で共通に使うものは、入れ子にしない。
 - UDP の行には、送った要求の種類(設定の `service`)を `"udp":{"service":"dns"}` と書く。ポートの既定を変えたとき(5353 で `dns` を送る、など)にも、何を送ったかが行から分かるように。設定の指紋(7.9 節)にも含まれるが、指紋は人が読めない。
 - SNMP の値(`varbinds`)
   - OID をキーにしたオブジェクトではなく、配列にする。要求した順序が残り、GetBulk や walk で同じ形を使える。
   - `type` には SNMP の型(`Integer`、`OctetString`、`ObjectIdentifier`、`IpAddress`、`Counter32`、`Gauge32`、`TimeTicks`、`Opaque`、`Counter64`)を書く。`noSuchObject`、`noSuchInstance`、`endOfMibView` の例外もここに書き、`value` は書かない。例外があっても、要求全体の `status` は `ok` のまま。
+    - `snmpm` は Gauge32 を `'Unsigned32'` として返す(BER のタグが同じで、MIB なしでは区別できない)。記録では `Gauge32` と書く。
+    - 値そのものが NULL の varbind(`snmpm` では `{'NULL', 'NULL'}`。例外とは別)は、`type` を `Null` とし、`value` は書かない。
   - 型ごとの `value` の形
     - `Integer`、`Counter32`、`Gauge32`、`TimeTicks`、`Counter64`:数値(`Integer` は負の数もある)。
     - `ObjectIdentifier`:点で区切った文字列(`"1.3.6.1.2.1.2.2.1.1"`)。
-    - `IpAddress`:点で区切った文字列(`"192.0.2.1"`)。
+    - `IpAddress`:点で区切った文字列(`"192.0.2.1"`)。4 バイトでないもの(壊れた応答)は `hex` に書く。
     - `Opaque`:いつも `hex` に書く。
   - OctetString は、正しい UTF-8 で、制御文字が `\t`、`\n`、`\r` だけのものは `value` に文字列で書く。そうでないもの(MAC アドレス、NUL や DEL などほかの制御文字を含むもの)は `hex` に書く。どちらで書いたかは項目の名前で分かる。
+    - 制御文字は Unicode の Cc(C0 の U+0000〜U+001F、DEL の U+007F、C1 の U+0080〜U+009F)。C1 も JSON では逃がされずにそのまま書かれ、見えないので、`hex` にする。
     - 改行を含む `sysDescr`(Cisco などでよくある)が文字列で読めるように、`\t`、`\n`、`\r` は許す。JSON では `\n` などに逃がされるので、1行に収まる。
     - 末尾に NUL を付ける機器もあるが、それも `hex` にする。元の値を正確に残すため。
   - `hex` は英小文字の16進で、区切りを入れない(`"001122aabbcc"`)。
