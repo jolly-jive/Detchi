@@ -15,7 +15,7 @@ defmodule Detchi.MixProject do
 
   def application do
     [
-      extra_applications: [:logger],
+      extra_applications: [:logger, :crypto],
       mod: {Detchi.Application, []}
     ]
   end

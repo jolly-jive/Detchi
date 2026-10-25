@@ -571,8 +571,19 @@ targets:
     - 時間はミリ秒の整数に直す(`60s` と `1m` は同じ指紋になる)。
     - `probes` は名前の順に並べる(並びは測り方に影響しないので、入れ替えただけでは変わらない)。
     - `oids` は順序を保つ(varbinds の順序に表れる)。
+    - キーは設定と同じ名前にする。ただし時間は `interval_ms` と `timeout_ms` にする(記録の `timeout_ms` と同じく、単位を名前に表す)。値のない項目(ICMP の `port` など)は書かない。
+    - 資格情報のプロファイルからは、SNMP の版(`snmp.version`)だけを含める。版は測り方を変え、秘密でもない(記録の行にも書く)。
+    - 含めるのは、機器の `name`、`host`、`family`、`snmp`(`port` と `version`)、`probes`。`host` から引いたアドレスは含めない(引き直しで変わるため。`start` の行の `addr` に書く)。全体の項目(`data_dir`、`compression` など)も含めない。
+    - たとえば、7.2 節の例の `core1`(`dns`、`if-uplink`、`ping`、`ssh` の順になる。`oids` は略した):
+
+      ```json
+      {"family":"auto","host":"192.0.2.1","name":"core1","probes":[{"interval_ms":60000,"name":"dns","port":53,"protocol":"udp","service":"dns","timeout_ms":1000},{"interval_ms":300000,"name":"if-uplink","oids":["1.3.6.1.2.1.1.3.0",...],"protocol":"snmp","timeout_ms":5000},...],"snmp":{"port":161,"version":"v2c"}}
+      ```
   - Detchi の版が上がって既定値やキーが変わると、設定を変えなくても指紋は変わる。測り方が変わったということなので、それでよい。`start` の行の `version` で、どちらで変わったかが読める。文書に書く。
-  - `detchi check-config` に、機器ごとの正規化した JSON と指紋を出す選択肢を付ける(案)。指紋が変わったとき、何が変わったかを手元で比べられる。
+  - `detchi check-config --fingerprints` で、機器ごとの指紋と正規化した JSON を出す。指紋が変わったとき、何が変わったかを手元で比べられる。
+    - 誤りがなければ、警告のあと、`<ファイル>: ok ...` の行の前に、機器ごとに `<機器> <指紋>` と `<機器> <正規化した JSON>` の2行を、設定の順に標準出力に出す。どの行も機器の名前で始まるので、2つの設定の出力を `diff` で比べたり、`grep` で1台だけ取り出したりできる。
+    - 誤りがあれば、`--fingerprints` を付けないときと同じ出力にする(指紋は出さない)。
+    - 資格情報は正規化した JSON に入らないので、この出力にも出ない。
 
 ## 8. 配布、文書、ライセンス
 
