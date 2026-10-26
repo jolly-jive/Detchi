@@ -117,9 +117,12 @@ flowchart LR
   - Probe は、互いに巻き込まないように、1段下の `one_for_one` の監督の下に置く。
 - **Resolver も機器ごとに1つ置く。** `host` が IP アドレスでも置き、アドレスを持つだけにする(機器による違いを Probe に見せない)。
   - アドレスが変わったら、`snmpm` に機器を登録し直す(`snmpm:register_agent/3` はアドレスで登録するため。5 節)。
+    - 登録してから表に入れる。SNMP の Probe が、まだ登録していないアドレスで `sync_get2` しないように。
+    - 登録は SNMP を実装するときに足す。それまでは、Resolver に登録の関数を渡す口だけを置き、何もしない。アドレスを `snmpm:update_agent_info/4` で差し替えられるか、`unregister_agent` してから登録し直すかは、そのときに確かめる。
 - **Probe はアドレスを ETS から読む。** システム全体で1つの表に、機器の名前ごとに、使うアドレスか、一度も引けていないこと(`{:unresolved, errno}`)を入れる。
   - 書くのは Resolver だけで、Probe は測るたびに読む。Probe は Resolver に call しないので、Resolver が名前解決で待っている間も Probe は止まらない。Resolver が Probe の pid を知る必要もない。
-  - 引き直しに失敗しても、表のアドレスは書き換えない(前のアドレスで測り続ける。7.6 節)。`{:unresolved, errno}` になるのは、起動してから一度も引けていないときだけ。引けなかった理由は Resolver が自分の状態に持ち、`resolve_failed` の行に書く。
+  - 引き直しに失敗しても、表のアドレスは書き換えない(前のアドレスで測り続ける。7.6 節)。`{:unresolved, errno}` になるのは、起動してから一度も引けていないときだけ。引けなかった理由は `resolve_failed` の行に書く。
+  - 一度も引けていない間は、再試行で失敗するたびに `{:unresolved, errno}` を新しい errno で書き直す(`nxdomain` が `timeout` に変わった、など)。Probe の行の `errno` が、いちばん新しい理由になるように。
   - 表は、落ちないプロセスが持つ(`Application.start/2` で作る)。Resolver が起動し直しても消えない。
 - **`start` の行は、どの測定の行よりも先に来るようにする。**
   - Resolver は、最初の名前解決を `init` ではなく `handle_continue` で行う。引けない機器が、ほかの機器の起動を待たせないように。
@@ -352,7 +355,7 @@ flowchart LR
   | `file_opened` | `version`、`config_hash`、`addr` | 日が替わって新しいファイルを開いたとき。起動のときは書かない(`start` が代わりになる)。 |
   | `stop` | `abandoned` | SIGTERM で止まるとき。`abandoned` は、結果を待たずに打ち切った要求の数(7.9 節)。 |
   | `dropped` | `count`、`first_ts`、`last_ts` | ドロップが収まって書けるようになったとき、まとめて1行。`first_ts` と `last_ts` は落とした行の `ts` の範囲。 |
-  | `resolve_failed` | `host`、`error`、`addr` | 引き直しに失敗するたびに書く。`error` の `reason` は `resolve`。`addr` は使い続けているアドレス。 |
+  | `resolve_failed` | `host`、`error`、`addr` | 引き直しに失敗するたびに書く。起動のときの最初の失敗でも、`start` の後に書く(`errno` が測定の行にしか残らないことにならないように)。`error` の `reason` は `resolve`。`addr` は使い続けているアドレスで、一度も引けていなければ書かない。 |
   | `addr_changed` | `host`、`old`、`new` | 引き直したアドレスが変わったとき。初めて引けたときは `old` を省く。 |
   | `clock_stepped` | `offset_us` | 壁時計が大きく跳んだとき(単調な時計と比べて見つける)。chrony が時刻を合わせる前に起動すると `ts` が跳ぶので、その説明になる。閾値は 1 秒(chrony が少しずつ寄せる調整は拾わず、跳んだときだけ書く)。見つけ方(`erlang:monitor(time_offset, clock_service)` を使うか、定期的に比べるか)は、実装のときに試す。 |
 
@@ -526,9 +529,20 @@ targets:
   - 測るたびに引くと、DNS が止まったときに、機器が生きていてもすべての測定が失敗する。測りたいのは機器であって DNS ではない。
 - 引き直しに失敗したら、前のアドレスで測り続ける。失敗とアドレスの変化は、出来事の行(`resolve_failed`、`addr_changed`)に書く。測定の行には実際に送った `addr` があるので、何を測ったかは後から分かる。
 - 起動のときに一度も引けなかった機器は、起動を止めずに(DNS が1つ止まっただけで全体が動かなくならないように)、`status` が `error` の行を書きながら引けるまで再試行する。その行には `addr` を書かない(6.1 節)。
+  - 引けるまでの再試行は、`resolve_interval` より短い間隔で始める。10 秒から始めて倍にしていき、`resolve_interval` で止める(10s、20s、40s、80s、160s、5m)。`resolve_interval` で再試行すると、DNS が戻ってから最大 5 分測れないため。設定の項目にはしない。
   - 前の起動で使っていたアドレスは使わない。DNS が止まっている間に起動すると、DNS が戻るまで測れないが、それは受け入れる。
   - 記録のいちばん新しいファイルから前のアドレスを拾い、引けるまで仮に使う案も考えた。設定の `host` を書き換えたあとに古いアドレスを拾わないよう、`start` の行に `host` を足して一致を確かめる必要があり、採らなかった。
-- TTL には従わない。Erlang の普通の名前解決(`:inet.getaddr`。`/etc/hosts` も見る)は TTL を返さず、TTL を返す `inet_res` は `/etc/hosts` を見ないため。
+- TTL には従わない。Erlang の普通の名前解決(`:inet.getaddrs`。`/etc/hosts` も見る)は TTL を返さず、TTL を返す `inet_res` は `/etc/hosts` を見ないため。
+- **名前に複数のアドレスがあれば、今使っているアドレスが答えに残っている限り、それを使い続ける。** 残っていなければ、答えの最初のアドレスに替える。
+  - `:inet.getaddr`(最初の1つだけを返す)で引くと、ラウンドロビンの DNS では引き直すたびに `addr_changed` が出て、測る相手も替わるため。`:inet.getaddrs` で全部を引く。
+  - 起動のときと、一度も引けていなかった機器が初めて引けたときは、答えの最初のアドレスを使う。
+- `family` の `auto` は、A を引き、A がなければ AAAA を引く(NexPinger と同じ)。
+  - AAAA を引くのは、A の答えが `nxdomain` のときだけ。`timeout` などで A を引けなかったときは、AAAA に行かずに失敗とする。DNS が一時詰まっただけで IPv6 に移らないように。
+  - OTP の普通の名前解決(`lookup` が `native`)は、名前があって A がない場合(NODATA)も `nxdomain` を返す(2026-10-26 に `ipv6.google.com` で確かめた)。そのため、この場合も AAAA に行く。
+  - A も AAAA もなければ、AAAA を引いたときの誤りを書く。
+  - 引き直しで A が消えて AAAA だけになれば IPv6 に移り、A が戻れば IPv4 に戻る(`addr_changed` に出る)。それは受け入れる。
+- 1回の問い合わせは 5 秒で打ち切る(`:inet.getaddrs/3` のタイムアウト。誤りは `timeout`)。`auto` で A と AAAA を引くと最大 10 秒。
+  - Resolver は exit を捕まえないので、引いている途中でも、止まれと言われればすぐ止まる。打ち切るのは、引き直しが長く詰まらないようにするため。
 
 ### 7.7 同じ測定の繰り返し
 

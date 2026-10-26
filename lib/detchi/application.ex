@@ -7,6 +7,10 @@ defmodule Detchi.Application do
   # application environment first (see Detchi.CLI.Run).
   @impl true
   def start(_type, _args) do
+    # Owned by the process that runs start/2, which lives as long as the
+    # application, so that the table outlives the Resolvers.
+    Detchi.Addresses.create()
+
     children = []
 
     Supervisor.start_link(children, strategy: :one_for_one, name: Detchi.Supervisor)
