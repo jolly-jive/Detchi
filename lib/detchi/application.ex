@@ -11,7 +11,11 @@ defmodule Detchi.Application do
     # application, so that the table outlives the Resolvers.
     Detchi.Addresses.create()
 
-    children = []
+    # The registry comes first: the Writers register as they start.
+    children = [
+      Detchi.Registry,
+      {Detchi.Targets, config: Application.fetch_env!(:detchi, :config)}
+    ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: Detchi.Supervisor)
   end

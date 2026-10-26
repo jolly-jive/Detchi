@@ -172,6 +172,10 @@ defmodule Detchi.Writer do
     {:noreply, %{state | files: files, closed_through: max(state.closed_through, through)}}
   end
 
+  # The registry (Detchi.Registry) is linked. If it goes, the entry of the
+  # Writer is gone; the Writer stops, to be started again and registered.
+  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
+
   # Supervisors stop the Writer with :shutdown; SIGTERM comes this way.
   @impl true
   def terminate(reason, state) do

@@ -70,7 +70,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 flowchart TD
   snmp["snmp アプリケーション(snmpm)<br/>Detchi より先に起動"]
   sup["Detchi.Supervisor"]
-  reg["Registry<br/>機器の名前 → pid"]
+  reg["Registry<br/>機器の名前 → Writer"]
   hk["Housekeeper<br/>前日分の圧縮、保持期間の削除"]
   clk["Clock<br/>壁時計の跳びを見る"]
   tsup["Targets<br/>one_for_one"]
@@ -140,6 +140,12 @@ flowchart LR
 - **Housekeeper はシステム全体で1つ。** Raspberry Pi で圧縮が一度に重ならないように。
   - 起動のときの片付け(過ぎた日の `.jsonl` の圧縮、`.part` の削除。6.2 節)と、保持期間を過ぎたものの削除(6.4 節)も受け持つ。
 - **Clock もシステム全体で1つ。** 壁時計が跳んだら、Registry で全機器の Writer を引き、`clock_stepped` の行(6.1 節)を書かせる。
+- **Registry に登録するのは Writer だけ。** キーは機器の名前。Resolver や Probe を pid で引く者はいない(Probe はアドレスを ETS から読む)。Housekeeper と Clock は、1つずつなので名前を固定する。
+  - Resolver と Probe には、Writer の pid ではなく、Registry を通した名前(`{:via, Registry, ...}`)を渡す。機器の子の定義は、起動する前に組むので、その時点では pid がない。名前なら、Writer が起動し直して pid が変わっても使える。
+  - 起動し直した Writer は、古い登録が消える前でも、同じ名前で登録できる(Elixir の `Registry` は、登録している pid が死んでいれば消して登録し直す。2026-10-26 にテストで確かめた)。
+  - 上の監督は `one_for_one` のままにし、Registry を先頭に置く。Registry が落ちて起動し直すと登録はすべて消えるが、登録した Writer は Registry とリンクしているので、その知らせを受けて止まる。機器の監督が起動し直し、Writer は登録し直す(テストで確かめた)。`rest_for_one` にすると、Housekeeper が落ちたときに機器まで巻き込むので、採らなかった。Registry が落ちることは、まずない。
+  - Registry の値でもアドレスは持てる(`Registry.update_value`)が、使わない。登録はそのプロセスと一緒に消えるので、表を Resolver の再起動より長く残すという決め(上)に合わない。
+- **機器の監督(Targets)の子は、起動のときの設定で決まる。** 設定を変えたら再起動する(7.9 節)ので、`DynamicSupervisor` は要らない。
 
 ## 4. 測り方(RTT)
 
