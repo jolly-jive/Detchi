@@ -65,7 +65,7 @@ defmodule Detchi.Probe do
 
   @doc "Whether the protocol of a probe is implemented yet."
   @spec implemented?(ProbeConfig.t()) :: boolean()
-  def implemented?(%ProbeConfig{protocol: protocol}), do: protocol in [:icmp, :tcp]
+  def implemented?(%ProbeConfig{protocol: protocol}), do: protocol in [:icmp, :tcp, :udp]
 
   @doc """
   The phase of a probe in milliseconds, from 0 to `interval_ms - 1`.
@@ -165,6 +165,7 @@ defmodule Detchi.Probe do
 
   defp measure(%ProbeConfig{protocol: :icmp}), do: &Detchi.Icmp.measure/2
   defp measure(%ProbeConfig{protocol: :tcp}), do: &Detchi.Tcp.measure/2
+  defp measure(%ProbeConfig{protocol: :udp}), do: &Detchi.Udp.measure/2
 
   defp schedule(state, due) do
     Process.send_after(self(), :tick, due, abs: true)

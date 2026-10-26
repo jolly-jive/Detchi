@@ -101,12 +101,11 @@ defmodule Detchi.TargetTest do
         %Probe{name: "stuck", protocol: :icmp, interval_ms: 100, timeout_ms: 50},
         # Not implemented yet, so not started.
         %Probe{
-          name: "dns",
-          protocol: :udp,
+          name: "uptime",
+          protocol: :snmp,
           interval_ms: 100,
           timeout_ms: 50,
-          port: 53,
-          service: :dns
+          oids: [[1, 3, 6, 1, 2, 1, 1, 3, 0]]
         }
       ]
     }
