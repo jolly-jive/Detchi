@@ -90,6 +90,64 @@ defmodule Detchi.TargetTest do
     wait_until(fn -> match?([{"core1", pid}] when pid != old, writers(ctx)) end)
   end
 
+  test "the probes measure through the Writer, and count what they cut off in stop", ctx do
+    target = %Target{
+      name: "lo",
+      host: "127.0.0.1",
+      address: {127, 0, 0, 1},
+      family: :auto,
+      probes: [
+        %Probe{name: "ping", protocol: :icmp, interval_ms: 100, timeout_ms: 50},
+        %Probe{name: "stuck", protocol: :icmp, interval_ms: 100, timeout_ms: 50},
+        # Not implemented yet, so not started.
+        %Probe{name: "ssh", protocol: :tcp, interval_ms: 100, timeout_ms: 50, port: 22}
+      ]
+    }
+
+    test = self()
+
+    measure = fn
+      addr, %Probe{name: "ping"} = probe ->
+        Detchi.Icmp.measure(addr, probe)
+
+      _addr, %Probe{name: "stuck"} ->
+        send(test, :stuck)
+        Process.sleep(:infinity)
+    end
+
+    start_supervised!(
+      {Detchi.Target,
+       target: target,
+       data_dir: ctx.dir,
+       resolve_interval_ms: 3_600_000,
+       registry: ctx.registry,
+       table: ctx.table,
+       writer_opts: [housekeeper: self()],
+       probe_opts: [measure: measure]},
+      id: :lo
+    )
+
+    assert_receive :stuck, 1_000
+    Process.sleep(300)
+    :ok = stop_supervised(:lo)
+
+    [path] = Path.wildcard(Path.join([ctx.dir, "lo", "*.jsonl"]))
+    lines = path |> File.read!() |> String.split("\n", trim: true) |> Enum.map(&:json.decode/1)
+
+    assert %{"event" => "start", "addr" => "127.0.0.1"} = hd(lines)
+    assert %{"event" => "stop", "abandoned" => 1} = List.last(lines)
+
+    measurements = Enum.filter(lines, & &1["protocol"])
+    assert length(measurements) >= 2
+
+    for line <- measurements do
+      assert %{"probe" => "ping", "protocol" => "icmp", "addr" => "127.0.0.1", "status" => "ok"} =
+               line
+
+      assert is_integer(line["rtt_us"])
+    end
+  end
+
   # Empty while the registry is down.
   defp writers(ctx) do
     Detchi.Registry.writers(ctx.registry)

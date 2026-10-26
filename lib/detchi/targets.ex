@@ -19,8 +19,8 @@ defmodule Detchi.Targets do
     * `:config` (required): the validated config.
     * `:name`: the name of the process. Defaults to `Detchi.Targets`.
     * `:registry`, `:table`: as `Detchi.Target` takes them. For tests.
-    * `:writer_opts`, `:resolver_opts`: as `Detchi.Target` takes them,
-      for all the targets. For tests.
+    * `:writer_opts`, `:resolver_opts`, `:probe_opts`: as
+      `Detchi.Target` takes them, for all the targets. For tests.
   """
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do

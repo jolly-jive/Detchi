@@ -137,6 +137,12 @@ flowchart LR
 - **Probe(測定ごとに1つ)と Attempt(1回の要求ごとに1つ)を分ける。**
   - Probe は、間隔と測る時刻の分散(7.5 節)を受け持ち、待たない。送って待つのは Attempt(`Task`)で、`recv` や `sync_get2` で待っている間も、Probe の時刻の管理が止まらない。
   - `timeout` は `interval` より短い(7.3 節)ので、待っている Attempt は Probe ごとに多くて1つ。打ち切った数は、Attempt が残っている Probe の数になる。
+  - Attempt は `Task.async` で起動する(Probe とリンクする)。Probe は exit を捕まえ、止まるときの `terminate/2` で、残っている Attempt を殺し、`abandoned` に 1 を足す。Attempt が持つソケットは、Attempt が死ぬと閉じる。
+  - 測る時刻が来たときに前の Attempt が残っていれば、その回は飛ばす(ふだんは `timeout` < `interval` なので起きない)。
+  - 念のため、Probe の側でも `timeout` に 1 秒を足した時間を過ぎた Attempt は殺し、`reason` が `internal` の行を書く。Attempt は自分で `timeout` を守るので、これは Attempt が詰まったときのためのもの。
+  - Attempt が例外で落ちたときも、`internal` の行を書き、詳しいことはログにだけ出す。Probe は落ちない。Probe が落ち続けて `Probes` の再起動の上限を超えると、機器の監督ごと起動し直して `start` が増えるが、Attempt の失敗では Probe は落ちないので、上限は既定のままにする。
+  - `ts` は Attempt が送る直前に壁時計で取り、RTT は単調な時計で、送る直前から受け取った直後までを測る(BEAM の中の時計。カーネルの受信時刻を使う案は 10 節)。
+  - 名前を一度も引けていない機器(表が `{:unresolved, errno}`)では、Attempt を起動せず、Probe が `reason` が `resolve` の行を書く。
 - **Housekeeper はシステム全体で1つ。** Raspberry Pi で圧縮が一度に重ならないように。
   - 起動のときの片付け(過ぎた日の `.jsonl` の圧縮、`.part` の削除。6.2 節)と、保持期間を過ぎたものの削除(6.4 節)も受け持つ。
 - **Clock もシステム全体で1つ。** 壁時計が跳んだら、Registry で全機器の Writer を引き、`clock_stepped` の行(6.1 節)を書かせる。
@@ -150,6 +156,12 @@ flowchart LR
 ## 4. 測り方(RTT)
 
 - ICMP は、権限の要らない ICMP のソケット(datagram socket)を使う。Docker の既定の `net.ipv4.ping_group_range` で動く。
+  - **1回ごとにソケットを開き**、宛先に connect して、送って、受けて、閉じる(NexPinger と同じ)。Echo の識別子はカーネルがソケットごとに振り(ソケットのポート番号)、その識別子の応答だけを渡すので、前の回の遅れた応答が混ざらない。`IP_RECVERR` の誤りも、connect した宛先のものだけが来る。60 秒の間隔なら、開け閉めの重さは問題にならない。
+  - 識別子と checksum は、カーネルが書き換える。ICMPv6 だけでなく ICMPv4 でも、checksum を 0 のまま送れば応答が返った(2026-10-26 に確かめた)。Detchi は checksum を計算しない。
+  - 系列番号はランダム、データは 32 バイトのランダムなバイト列(NexPinger と同じ)。受けた応答の type、系列番号、データが送ったものと合うものだけを応答とし、合わないものは読み捨てて待ち続ける。データの大きさは設定の項目にしない。
+  - TTL(hop limit)、DF、TOS は OS の既定のまま。TTL はテストのときだけ変えられる口を置く(Time Exceeded を手元で起こすため)。
+  - 送るときに errno が返ったとき(手元に経路がない `enetunreach` など)は、`reason` が `errno` の行にする。`econnrefused` は `refused`、`ehostunreach`、`enetunreach`、`ehostdown`、`enetdown` は `unreachable`、ほかは `internal`(errno はログに出す)。
+  - **`detchi run` は、起動のときに ICMP のソケットを開けるか確かめ、開けなければ起動しない**(標準エラー出力に理由を出し、終了コード 1)。`ping_group_range` の外で動かすと、すべての ICMP の行が失敗になり、記録が書かれ続けるので `detchi status` でも気づけないため。確かめるのは、ICMP の測定がある機器が使うアドレスの族だけ。`family` が `ipv6` の機器と `host` が IPv6 のアドレスの機器は IPv6、ほかは IPv4(`auto` は A を先に引くので IPv4。AAAA だけの名前で IPv6 が開けなければ、その行は `internal` になる)。起動したあとで開けなくなったら、`internal` の行を書く。
 - ICMP と UDP のソケットには、いつも `IP_RECVERR`(IPv6 は `IPV6_RECVERR`)を付ける。
   - 付けないと、Linux は ICMP の誤りのうち「致命的」とするもの(Port Unreachable など)しかソケットに伝えない。Time Exceeded や、ルーターがよく返す Host Unreachable、Net Unreachable は伝わらず、`timeout` として記録されてしまう(2026-10-24 に、ICMP、ICMPv6、UDP のソケットで確かめた)。
   - 付ければ、受信がすぐに errno(`ehostunreach` など)を返し、誤りのキュー(`MSG_ERRQUEUE`)から ICMP の type と code、返してきたアドレスが取れる。記録の形は 6.1 節の `reason` が `icmp` のもの。
@@ -530,6 +542,12 @@ targets:
 ### 7.5 測る時刻の分散
 
 - すべての測定が同じ瞬間に始まらないように、Detchi が自動で始まりをずらす。設定の項目にはしない。
+- 測定ごとに、位相を `erlang:phash2({機器の名前, 測定の名前}, interval)`(ミリ秒)で決め、**壁時計(UNIX 時刻)が `interval` の倍数に位相を足した時刻**に測る。
+  - 位相は名前から決まるので、再起動しても同じ時刻に測る。記録を日をまたいで並べたり、機器どうしを比べたりするときに揃う。ランダムや起動の時刻を起点にすると、起動のたびに変わる。`phash2` の値は ERTS の版や機械によらない(OTP の文書による)。
+  - 測定がたくさんあれば、ハッシュでほぼ均等に散らばる。偶然重なることはあるが、それは受け入れる。
+  - 起動してから最初に測るまで、最大で `interval` かかる(SNMP の 300s なら最大 5 分)。起動のときは `start` の行が書かれるので、稼働の確認(9.5 節)では止まっていると判定されない。
+- 壁時計で揃えるのは最初の回だけ。その後は単調な時計で、前の予定に `interval` を足していく(ずれを溜めない)。壁時計が跳んでも間隔は保たれ、位相が壁時計からずれるだけ。次に起動すれば揃い直す。
+- 予定に遅れたとき(GC や負荷で、予定の時刻を過ぎてから動いたとき)は、すぐに測り、次の予定はその回の予定に `interval` を足したもの。1回分以上遅れたときは、過ぎた回は飛ばし、まとめて送らない。飛ばしたことは行に書かない。
 
 ### 7.6 ホスト名の解決
 
@@ -751,6 +769,7 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
   - `clock_stepped` の見つけ方。
 - プロセスの構成の細部(3.1 節)。
   - 背圧によるドロップを判断する場所:Writer がディスクで詰まると、自分のメールボックスを捌けない。送る側で Writer のキューの長さを見て落とし、落とした数をカウンター(`atomics` など)で Writer に伝える形が考えられる。`dropped` の `first_ts` と `last_ts` も同じように渡す。Writer の中で書けなかった行の数え方(3.1 節)とは、1つの `dropped` の行にまとめる。
+- RTT の精度(3.1 節)。最初の版は BEAM の単調な時計で測るので、Raspberry Pi が重いときは、受け取ってから Attempt が動くまでの遅れが RTT に乗る。気になるなら、カーネルの受信時刻(`SO_TIMESTAMPNS` の制御メッセージ)を使う。OTP の `socket` で取れるか、送った時刻とどう比べるかは未確認。
 - プッシュ型の時刻の扱い(6.1 節。暫定の決め。実機で確かめて考え直す)。
 - 将来、配布をコンテナイメージにも広げるか(置き場所と CI が要る。Koitohan は GitHub Actions を Public 化まで保留している)。
 - SNMP のインデックスと実体の対応が変わることへの対処。

@@ -130,4 +130,28 @@ defmodule Detchi.CLITest do
 
     refute List.keymember?(Application.started_applications(), :detchi, 0)
   end
+
+  test "run checks ICMP sockets of the families the ICMP probes use" do
+    {:ok, config, []} = Detchi.Config.load(@sample)
+    test = self()
+
+    checking = fn result ->
+      fn family ->
+        send(test, {:checked, family})
+        result
+      end
+    end
+
+    assert Detchi.CLI.Run.check_icmp(config, checking.(:ok)) == :ok
+    assert_received {:checked, :inet}
+    assert_received {:checked, :inet6}
+
+    assert Detchi.CLI.Run.check_icmp(config, checking.({:error, :eacces})) ==
+             {:error,
+              "cannot open an ICMP socket (eacces); " <>
+                "net.ipv4.ping_group_range does not include the groups of this user"}
+
+    assert Detchi.CLI.Run.check_icmp(%{config | targets: []}, checking.({:error, :eacces})) ==
+             :ok
+  end
 end

@@ -2,11 +2,12 @@ defmodule Detchi.Target do
   @moduledoc """
   The supervisor of one target (docs/basic-design.md, 3.1).
 
-  The children are, in this order, the Writer, the Resolver and, later,
-  the probes, under `rest_for_one`: each needs the ones before it. On
-  shutdown they stop in the reverse order, so the Writer writes `stop`
-  last. When the Writer is restarted, the Resolver is restarted too, and
-  `start` is written again.
+  The children are, in this order, the Writer, the Resolver and the
+  probes (`Detchi.Probes`), under `rest_for_one`: each needs the ones
+  before it. On shutdown they stop in the reverse order, so the probes
+  count what they cut off before the Writer writes `stop` last. When the
+  Writer is restarted, the others are restarted too, and `start` is
+  written again.
 
   The Writer is registered in `Detchi.Registry`, and the others are given
   its name, so that they reach the Writer after it is restarted.
@@ -14,7 +15,7 @@ defmodule Detchi.Target do
 
   use Supervisor
 
-  alias Detchi.{Resolver, Writer}
+  alias Detchi.{Probes, Resolver, Writer}
   alias Detchi.Config.Target
 
   @type option ::
@@ -25,6 +26,7 @@ defmodule Detchi.Target do
           | {:table, atom()}
           | {:writer_opts, keyword()}
           | {:resolver_opts, keyword()}
+          | {:probe_opts, keyword()}
 
   @doc """
   Starts the supervisor of a target.
@@ -38,8 +40,8 @@ defmodule Detchi.Target do
     * `:registry`: the registry of the Writers. Defaults to
       `Detchi.Registry`.
     * `:table`: the address table. Defaults to `Detchi.Addresses`.
-    * `:writer_opts`, `:resolver_opts`: more options of the Writer and
-      the Resolver. For tests.
+    * `:writer_opts`, `:resolver_opts`, `:probe_opts`: more options of
+      the Writer, the Resolver and every Probe. For tests.
   """
   @spec start_link([option()]) :: Supervisor.on_start()
   def start_link(opts), do: Supervisor.start_link(__MODULE__, opts)
@@ -69,6 +71,16 @@ defmodule Detchi.Target do
       ]
       |> Keyword.merge(Keyword.get(opts, :resolver_opts, []))
 
-    Supervisor.init([{Writer, writer_opts}, {Resolver, resolver_opts}], strategy: :rest_for_one)
+    probes_opts = [
+      target: target,
+      writer: writer,
+      table: table,
+      probe_opts: Keyword.get(opts, :probe_opts, [])
+    ]
+
+    Supervisor.init(
+      [{Writer, writer_opts}, {Resolver, resolver_opts}, {Probes, probes_opts}],
+      strategy: :rest_for_one
+    )
   end
 end
