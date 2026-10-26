@@ -100,7 +100,14 @@ defmodule Detchi.TargetTest do
         %Probe{name: "ping", protocol: :icmp, interval_ms: 100, timeout_ms: 50},
         %Probe{name: "stuck", protocol: :icmp, interval_ms: 100, timeout_ms: 50},
         # Not implemented yet, so not started.
-        %Probe{name: "ssh", protocol: :tcp, interval_ms: 100, timeout_ms: 50, port: 22}
+        %Probe{
+          name: "dns",
+          protocol: :udp,
+          interval_ms: 100,
+          timeout_ms: 50,
+          port: 53,
+          service: :dns
+        }
       ]
     }
 

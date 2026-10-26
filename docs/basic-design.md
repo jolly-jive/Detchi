@@ -162,12 +162,13 @@ flowchart LR
   - TTL(hop limit)、DF、TOS は OS の既定のまま。TTL はテストのときだけ変えられる口を置く(Time Exceeded を手元で起こすため)。
   - 送るときに errno が返ったとき(手元に経路がない `enetunreach` など)は、`reason` が `errno` の行にする。`econnrefused` は `refused`、`ehostunreach`、`enetunreach`、`ehostdown`、`enetdown` は `unreachable`、ほかは `internal`(errno はログに出す)。
   - **`detchi run` は、起動のときに ICMP のソケットを開けるか確かめ、開けなければ起動しない**(標準エラー出力に理由を出し、終了コード 1)。`ping_group_range` の外で動かすと、すべての ICMP の行が失敗になり、記録が書かれ続けるので `detchi status` でも気づけないため。確かめるのは、ICMP の測定がある機器が使うアドレスの族だけ。`family` が `ipv6` の機器と `host` が IPv6 のアドレスの機器は IPv6、ほかは IPv4(`auto` は A を先に引くので IPv4。AAAA だけの名前で IPv6 が開けなければ、その行は `internal` になる)。起動したあとで開けなくなったら、`internal` の行を書く。
-- ICMP と UDP のソケットには、いつも `IP_RECVERR`(IPv6 は `IPV6_RECVERR`)を付ける。
+- ICMP、TCP、UDP のソケットには、いつも `IP_RECVERR`(IPv6 は `IPV6_RECVERR`)を付ける。
   - 付けないと、Linux は ICMP の誤りのうち「致命的」とするもの(Port Unreachable など)しかソケットに伝えない。Time Exceeded や、ルーターがよく返す Host Unreachable、Net Unreachable は伝わらず、`timeout` として記録されてしまう(2026-10-24 に、ICMP、ICMPv6、UDP のソケットで確かめた)。
   - 付ければ、受信がすぐに errno(`ehostunreach` など)を返し、誤りのキュー(`MSG_ERRQUEUE`)から ICMP の type と code、返してきたアドレスが取れる。記録の形は 6.1 節の `reason` が `icmp` のもの。
   - 誤りのキューの読み方:OTP の `socket:recvmsg/5` に `[errqueue]` を渡すと、制御メッセージ(`ctrl`)に `recverr` が入る。type と code は、OTP が名前に直したもの(`time_exceeded` など。知らない値は数値のまま)ではなく、生のバイト列(`struct sock_extended_err`)から数値で読む。
   - 手元で ARP が引けないときは、約 3 秒後にカーネルが自分で Host Unreachable を作る。そのとき、返してきたアドレスは自分のアドレスになる。
-- UDP は NexPinger に準じる(4.1 節)。
+  - 読み方は ICMP、TCP、UDP で同じなので、1つのモジュール(`Detchi.NetError`)にまとめた。
+- UDP は NexPinger に準じる(4.1 節)。TCP は 4.2 節。
 
 ### 4.1 UDP
 
@@ -213,6 +214,37 @@ flowchart LR
     - 出す場所は `detchi check-config` の出力と、起動のときの標準出力のログ。警告では止まらない(`check-config` の終了コードも 0)。
     - 宛先のアドレスによって警告を省くこと(プライベートアドレスなら自分で運用しているとみなす、など)はしない。`host` がホスト名なら、設定を読んだだけではアドレスが分からず、引き直しで変わることもある。また、プライベートアドレスでも自分で運用しているとは限らない(社内の NTP サーバー、プロバイダーの機器など)。警告は起動のときに1行出るだけなので、自分のサーバーなら読み流してもらえばよい。
     - 自分で運用していないサーバーに 8 秒より短い間隔で問い合わせないよう、文書にも書く。
+
+### 4.2 TCP
+
+NexPinger(`lib/nexpinger/prober.ex`)は `:gen_tcp.connect/4` でつなぎ、つながったら閉じるだけ。Detchi も、つなぐまでの時間を測ることは同じにして、ソケットは ICMP と同じく OTP の `socket` で扱う。誤りのキュー(4 節)と `socket:sockname/1` が使え、`socket:connect/3` にタイムアウトを渡せる。
+
+- 送り方
+  - 測るたびに新しいソケットを開き、宛先(`addr` と `port`)に connect し、閉じる。つながった後は何も送らず、何も読まない。
+  - ソケットには `IP_RECVERR` / `IPV6_RECVERR` を付ける(4 節)。
+  - 閉じるのは普通の close(FIN)。NexPinger と同じで、相手には普通につないで切っただけに見える。
+    - 自分の側に TIME_WAIT が 60 秒残るが、測定1つにつき1つなので、数は問題にならない。
+    - `SO_LINGER` を 0 にして RST で切れば TIME_WAIT は残らないが、機器によっては異常としてログに出るので採らなかった。
+- 成功の条件
+  - **SYN-ACK が返れば `ok`。** connect が返ったとき。
+  - RST が返れば `refused`。`error` は `reason` が `errno` のもの(`econnrefused`)。RST はネットワークから届いたので `rtt_us` を付ける(6.1 節)。
+  - ICMP の誤りが返れば、connect はすぐに失敗する。`error` は `reason` が `icmp` のもの(6.1 節)。
+    - 試した例(2026-10-27):TTL を 1 にして 8.8.8.8 の 53 番へつなぐと、3ms で `ehostunreach`、誤りのキューに type 11 code 0、返してきたアドレスは最初のルーター。ARP が引けないアドレスへつなぐと、3.07 秒で `ehostunreach`、type 3 code 1、返してきたアドレスは自分。
+    - Port Unreachable は `refused`。iptables の `REJECT` は TCP にも、既定では Port Unreachable を返す。`from` で、宛先でなくファイアウォールが返したと分かる。
+    - カーネル 6.18 では、`IP_RECVERR` を付けなくても、TCP の誤りのキューに ICMP の誤りが入っていた。ほかのカーネル(Raspberry Pi のもの)でも同じかは確かめていないので、付けておく。
+    - connect が失敗した後でも、`socket:sockname/1` は送り元のアドレスを返す(ARP の例で確かめた)。誤りを自分が作ったかの判定(6.1 節)は ICMP と同じにできる。
+  - `timeout` の間に SYN-ACK も RST も ICMP の誤りもなければ `timeout`。
+  - 途中の機器が、宛先の代わりに答えることがある。ファイアウォールの SYN プロキシやロードバランサーは SYN-ACK を返し、ファイアウォールは RST を返すことがある。RST は `errno` で書くので `from` がなく、どちらが返したかは分からない。文書に書く。
+- RTT の起点と終点
+  - 起点は connect の直前(SYN を送る直前)、終点は connect が返ったとき(SYN-ACK を受け取り、ACK を送ったとき)。行の `ts` は起点と同じ時点の壁時計。
+  - **SYN の再送が RTT に入ることがある。** Linux は SYN-ACK が返らないと、1 秒後に SYN を送り直す(初めの RTO。`tcp_syn_retries` は 6)。受け付けの列が一杯のリスナーへ 5 秒のタイムアウトでつなぎ、1.5 秒後に列を空けると、2.05 秒後に `ok` になった(ループバックなので、本当の RTT はマイクロ秒の単位)。
+    - `timeout` が既定の 1 秒ならまず起きないが、長くすると「1回の要求」(SNMP と UDP は再送しない。7.4 節)ではなくなる。
+    - 止める方法はない。`TCP_SYNCNT` は OTP の `socket` が受け付けず(`{invalid, {socket_option, {tcp, syncnt}}}`。OTP 29 で確かめた)、受け付けても最小が 1 なので、1回は送り直す。
+    - そのまま受け入れ、1 秒を超える RTT には SYN の再送が入っているかもしれないことを、利用者向けの文書に書く。
+- 相手のログに残ることがある。sshd などは、つないで切るたびに `Connection closed by ... [preauth]` のような行を書く。60 秒ごとなら1日に 1440 行。fail2ban のような仕組みや、機器のログインの失敗の数え方に引っかかることもある。文書に書く。
+- errno の振り分けは ICMP と同じ(4 節。`econnrefused` は `refused`、`ehostunreach`、`enetunreach`、`ehostdown`、`enetdown` は `unreachable`、ほかは `internal`)。
+- 権限は要らないので、ICMP のような起動のときの確認(4 節)はしない。
+- テストの注意:WSL2 の mirrored のネットワークでは、127.0.0.1 の閉じたポートへの SYN が Windows に回り、RST が返らずにタイムアウトする(2026-10-27 に確かめた)。127.0.0.2 と `::1` では RST が返るので、テストではそちらを使う。`timeout` は、`backlog` を 0 にして accept しないリスナー(受け付けの列が一杯になると SYN を捨てる)で、手元で毎回同じに起こせる。
 
 ## 5. SNMP
 
@@ -338,8 +370,8 @@ flowchart LR
 
   | `reason` | 場面 | 項目 | `status` |
   | --- | --- | --- | --- |
-  | `errno` | OS のソケットの誤りで、ICMP の詳しいことがないもの(TCP の RST、TCP の connect の EHOSTUNREACH、手元に経路がない、など) | `errno` | `refused`、`unreachable` |
-  | `icmp` | ICMP、UDP の測定に ICMP の誤りが返った(誤りのキューから読めたとき。4 節) | `type`、`code`、`from` | `refused`(Port Unreachable)、`unreachable`(それ以外) |
+  | `errno` | OS のソケットの誤りで、ICMP の詳しいことがないもの(TCP の RST、手元に経路がない、など) | `errno` | `refused`、`unreachable` |
+  | `icmp` | ICMP、TCP、UDP の測定に ICMP の誤りが返った(誤りのキューから読めたとき。4 節) | `type`、`code`、`from` | `refused`(Port Unreachable)、`unreachable`(それ以外) |
   | `snmp` | 応答の `errorStatus` が 0 でない | `error_status`、`error_index` | `error` |
   | `snmp_report` | v3 の report PDU が返った(`usmStatsWrongDigests` など) | `oid` | `error` |
   | `resolve` | 名前を一度も引けていない(7.6 節) | `errno` | `error` |
@@ -769,6 +801,9 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
   - `clock_stepped` の見つけ方。
 - プロセスの構成の細部(3.1 節)。
   - 背圧によるドロップを判断する場所:Writer がディスクで詰まると、自分のメールボックスを捌けない。送る側で Writer のキューの長さを見て落とし、落とした数をカウンター(`atomics` など)で Writer に伝える形が考えられる。`dropped` の `first_ts` と `last_ts` も同じように渡す。Writer の中で書けなかった行の数え方(3.1 節)とは、1つの `dropped` の行にまとめる。
+- 手元のファイアウォールに落とされたときの errno(`eperm`)の扱い。
+  - Koitohan は nftables で行き先を `DEVICE_NETWORKS` に絞る予定(9.3 節)。絞った外への測定は、手元の OUTPUT で落とされて `eperm` が返りうる。いまの振り分け(4 節)では `internal` になる。
+  - ICMP、TCP、UDP のどれにも当てはまる。`reason` が `errno` の行にして、`status` を `error` か `unreachable` にする案がある。どの呼び出し(connect、send)で、すぐ返るのか再送の後に返るのかは、root のある環境で確かめる。
 - RTT の精度(3.1 節)。最初の版は BEAM の単調な時計で測るので、Raspberry Pi が重いときは、受け取ってから Attempt が動くまでの遅れが RTT に乗る。気になるなら、カーネルの受信時刻(`SO_TIMESTAMPNS` の制御メッセージ)を使う。OTP の `socket` で取れるか、送った時刻とどう比べるかは未確認。
 - プッシュ型の時刻の扱い(6.1 節。暫定の決め。実機で確かめて考え直す)。
 - 将来、配布をコンテナイメージにも広げるか(置き場所と CI が要る。Koitohan は GitHub Actions を Public 化まで保留している)。

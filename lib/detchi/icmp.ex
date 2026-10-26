@@ -13,18 +13,13 @@ defmodule Detchi.Icmp do
   """
 
   alias Detchi.Config.Probe
+  alias Detchi.NetError
 
   @echo_request_v4 8
   @echo_reply_v4 0
   @echo_request_v6 128
   @echo_reply_v6 129
   @payload_size 32
-
-  # sock_extended_err.ee_origin
-  @origin_icmp 2
-  @origin_icmp6 3
-
-  @unreachable [:ehostunreach, :enetunreach, :ehostdown, :enetdown]
 
   @type result :: %{
           required(:ts) => integer(),
@@ -57,7 +52,7 @@ defmodule Detchi.Icmp do
       end
 
     try do
-      :ok = :socket.setopt(socket, recverr(family), true)
+      NetError.recverr(socket, family)
       if ttl = opts[:ttl], do: :ok = :socket.setopt(socket, ttl_option(family), ttl)
       echo(socket, family, addr, timeout_ms)
     after
@@ -110,9 +105,6 @@ defmodule Detchi.Icmp do
   defp open(:inet), do: :socket.open(:inet, :dgram, :icmp)
   defp open(:inet6), do: :socket.open(:inet6, :dgram, :"ipv6-icmp")
 
-  defp recverr(:inet), do: {:ip, :recverr}
-  defp recverr(:inet6), do: {:ipv6, :recverr}
-
   defp ttl_option(:inet), do: {:ip, :ttl}
   defp ttl_option(:inet6), do: {:ipv6, :unicast_hops}
 
@@ -145,7 +137,7 @@ defmodule Detchi.Icmp do
 
       receive_reply(wait)
     else
-      {:error, errno} -> errno_result(errno, ts)
+      {:error, errno} -> NetError.errno_result(errno, ts)
     end
   end
 
@@ -167,12 +159,8 @@ defmodule Detchi.Icmp do
             timeout(wait)
 
           {:error, errno} ->
-            now = System.monotonic_time(:microsecond)
-
-            case icmp_error(wait.socket) do
-              nil -> errno_result(errno, wait.ts)
-              error -> icmp_result(error, wait, now - wait.started)
-            end
+            rtt_us = System.monotonic_time(:microsecond) - wait.started
+            NetError.result(wait.socket, errno, wait.ts, wait.local, rtt_us)
         end
     end
   end
@@ -186,48 +174,4 @@ defmodule Detchi.Icmp do
        do: true
 
   defp reply?(_packet, _expected), do: false
-
-  # The type and the code are read from struct sock_extended_err, not from
-  # the `value` OTP decodes, which turns them into atoms only for the ones
-  # it knows. The sender is the offender address after the struct.
-  defp icmp_error(socket) do
-    case :socket.recvmsg(socket, 0, 0, [:errqueue], 0) do
-      {:ok, %{ctrl: ctrl}} ->
-        Enum.find_value(ctrl, fn
-          %{
-            type: :recverr,
-            data: <<_errno::32-native, origin, type, code, _::binary>>,
-            value: %{offender: %{addr: from}}
-          }
-          when origin in [@origin_icmp, @origin_icmp6] ->
-            {type, code, from}
-
-          _ ->
-            nil
-        end)
-
-      {:error, _} ->
-        nil
-    end
-  end
-
-  # An error the host made itself (a neighbor that does not answer ARP)
-  # comes from the local address; the time is not an RTT then.
-  defp icmp_result({type, code, from} = error, wait, rtt_us) do
-    result = %{ts: wait.ts, status: icmp_status(error), error: {:icmp, type, code, from}}
-    if from == wait.local, do: result, else: Map.put(result, :rtt_us, rtt_us)
-  end
-
-  # Port Unreachable: type 3 code 3 in ICMPv4, type 1 code 4 in ICMPv6.
-  defp icmp_status({3, 3, {_, _, _, _}}), do: :refused
-  defp icmp_status({1, 4, {_, _, _, _, _, _, _, _}}), do: :refused
-  defp icmp_status(_), do: :unreachable
-
-  defp errno_result(:econnrefused, ts),
-    do: %{ts: ts, status: :refused, error: {:errno, :econnrefused}}
-
-  defp errno_result(errno, ts) when errno in @unreachable,
-    do: %{ts: ts, status: :unreachable, error: {:errno, errno}}
-
-  defp errno_result(errno, _ts), do: raise("unexpected error of an ICMP socket (#{errno})")
 end
