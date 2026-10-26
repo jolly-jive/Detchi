@@ -33,7 +33,8 @@ defmodule Detchi.Icmp do
   Measures the RTT to `addr` with one Echo, as a probe's attempt.
 
   Returns the fields of the measurement line that depend on the result,
-  with `ts` (system time in microseconds) taken as the attempt starts.
+  with `ts` (system time in microseconds) taken just before the Echo is
+  sent.
   Raises on failures that are not about the network (the socket cannot be
   opened, an unexpected errno), which the probe writes as `internal`.
 
@@ -119,25 +120,33 @@ defmodule Detchi.Icmp do
     packet = <<request, 0, 0::16, 0::16, seq::16, payload::binary>>
     expected = {reply, seq, payload}
 
+    # Nothing is sent if the connect fails; ts is then the time of the
+    # connect.
     ts = System.os_time(:microsecond)
 
     with :ok <- :socket.connect(socket, %{family: family, addr: addr, port: 0}),
-         {:ok, %{addr: local}} <- :socket.sockname(socket),
-         started = System.monotonic_time(:microsecond),
-         :ok <- :socket.send(socket, packet) do
-      wait = %{
-        socket: socket,
-        expected: expected,
-        local: local,
-        ts: ts,
-        started: started,
-        deadline: started + timeout_ms * 1000,
-        timeout_ms: timeout_ms
-      }
-
-      receive_reply(wait)
+         {:ok, %{addr: local}} <- :socket.sockname(socket) do
+      send_echo(
+        %{socket: socket, expected: expected, local: local, timeout_ms: timeout_ms},
+        packet
+      )
     else
       {:error, errno} -> NetError.errno_result(errno, ts)
+    end
+  end
+
+  defp send_echo(wait, packet) do
+    ts = System.os_time(:microsecond)
+    started = System.monotonic_time(:microsecond)
+
+    case :socket.send(wait.socket, packet) do
+      :ok ->
+        receive_reply(
+          Map.merge(wait, %{ts: ts, started: started, deadline: started + wait.timeout_ms * 1000})
+        )
+
+      {:error, errno} ->
+        NetError.errno_result(errno, ts)
     end
   end
 

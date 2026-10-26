@@ -142,6 +142,8 @@ flowchart LR
   - 念のため、Probe の側でも `timeout` に 1 秒を足した時間を過ぎた Attempt は殺し、`reason` が `internal` の行を書く。Attempt は自分で `timeout` を守るので、これは Attempt が詰まったときのためのもの。
   - Attempt が例外で落ちたときも、`internal` の行を書き、詳しいことはログにだけ出す。Probe は落ちない。Probe が落ち続けて `Probes` の再起動の上限を超えると、機器の監督ごと起動し直して `start` が増えるが、Attempt の失敗では Probe は落ちないので、上限は既定のままにする。
   - `ts` は Attempt が送る直前に壁時計で取り、RTT は単調な時計で、送る直前から受け取った直後までを測る(BEAM の中の時計。カーネルの受信時刻を使う案は 10 節)。
+    - ICMP と UDP では、connect と `socket:sockname/1` の後、send の直前。TCP では connect の直前(connect が SYN を送る)。SNMP では `sync_get2` を呼ぶ直前(5 節)。
+    - 送る前に失敗したとき(ICMP と UDP の connect が `enetunreach` を返したときなど)は、何も送っていないので、`ts` はその呼び出しの直前の時刻にする。
   - 名前を一度も引けていない機器(表が `{:unresolved, errno}`)では、Attempt を起動せず、Probe が `reason` が `resolve` の行を書く。
 - **Housekeeper はシステム全体で1つ。** Raspberry Pi で圧縮が一度に重ならないように。
   - 起動のときの片付け(過ぎた日の `.jsonl` の圧縮、`.part` の削除。6.2 節)と、保持期間を過ぎたものの削除(6.4 節)も受け持つ。
@@ -268,6 +270,7 @@ NexPinger(`lib/nexpinger/prober.ex`)は `:gen_tcp.connect/4` でつなぎ、つ�
   - タイムアウトの後に届いた応答は、user のモジュールの `handle_pdu/4` に渡る。捨てる。
   - **SNMP の行の `status` は `ok`、`timeout`、`error` だけになる。** `snmpm` のソケットは機器ごとに connect していないので、ICMP の誤り(Port Unreachable など)が見えない。エージェントがいない、ポートが閉じている、community が誤っている、のどれも `timeout` になる。利用者向けの文書に書く。
   - **RTT には `snmpm` の処理の時間が含まれる。** `sync_get2` の前後で測るので、マネージャーの内部のプロセスを渡る時間が入る。ループバックで 0.3〜1.1ms(ICMP は 0.15ms)。利用者向けの文書に書く。
+    - `snmpm` は自分のプロセスの中で要求を組み立てて送るので、本当に送った時刻は Detchi から取れない。`ts` と RTT の起点は `sync_get2` を呼ぶ直前にする(3.1 節)。要求の組み立て(v3 では認証と暗号の計算も)が RTT に入る。v3 の分は、v3 を実装するときに測る。
 - 版は v2c と v3 の両方に対応する。v3 は後回しでもよい。
   - v3 の注意:`snmpm` の USM は、パスフレーズではなく、機器の engine ID で局所化した鍵を受け取る。パスフレーズを書いてもらい、engine ID を取得してから鍵に変換することになる。
 
