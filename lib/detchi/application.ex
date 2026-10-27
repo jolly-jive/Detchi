@@ -18,11 +18,13 @@ defmodule Detchi.Application do
 
     # The registry comes first: the Writers register as they start. The
     # Housekeeper comes before the targets, as casts to a name not yet
-    # registered are lost.
+    # registered are lost. The Clock finds the Writers in the registry as
+    # it needs them.
     children = [
       Detchi.Registry,
       {Detchi.Housekeeper, config: config},
-      {Detchi.Targets, config: config}
+      {Detchi.Targets, config: config},
+      Detchi.Clock
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: Detchi.Supervisor)
