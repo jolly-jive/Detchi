@@ -24,7 +24,7 @@ defmodule Detchi.Writer do
   require Logger
 
   alias Detchi.Config.{Fingerprint, Target}
-  alias Detchi.Record
+  alias Detchi.{Housekeeper, Record}
 
   @version Mix.Project.config()[:version]
 
@@ -49,8 +49,9 @@ defmodule Detchi.Writer do
     * `:target` (required): the target, as in the config.
     * `:data_dir` (required): the directory of the records.
     * `:name`: the name of the process.
-    * `:housekeeper`: where `{:file_closed, path}` is cast when a file of
-      a past date is closed. Defaults to `Detchi.Housekeeper`.
+    * `:housekeeper`: the `Detchi.Housekeeper` told when a file of a past
+      date is closed, and, at start, asked to compress the files before
+      the date the Writer started. Defaults to `Detchi.Housekeeper`.
     * `:grace_ms`: how long files of past dates are kept open. Defaults
       to the longest timeout of the target and a margin.
     * `:clock`: returns the system time in microseconds. For tests.
@@ -110,6 +111,7 @@ defmodule Detchi.Writer do
     %Target{} = target = Keyword.fetch!(opts, :target)
     clock = Keyword.get(opts, :clock, fn -> System.os_time(:microsecond) end)
     offset = Keyword.get(opts, :offset, ~c"")
+    started = clock.() |> date(offset) |> Date.from_iso8601!()
 
     state = %{
       target: target.name,
@@ -124,12 +126,15 @@ defmodule Detchi.Writer do
       files: %{},
       # Lines of this date and earlier are not written: the files are
       # closed, or, before the Writer started, left to the Housekeeper.
-      closed_through:
-        clock.() |> date(offset) |> Date.from_iso8601!() |> Date.add(-1) |> to_string(),
+      closed_through: started |> Date.add(-1) |> to_string(),
       # nil, or {count, first_ts, last_ts} of the lines not written yet.
       dropped: nil,
       abandoned: 0
     }
+
+    # Files of earlier dates may be left uncompressed, if the Writer before
+    # this one went down with them open (docs/basic-design.md, 3.1).
+    Housekeeper.compress_before(state.housekeeper, target.name, to_string(started))
 
     {:ok, state}
   end
@@ -166,7 +171,7 @@ defmodule Detchi.Writer do
 
     Enum.each(closing, fn {date, fd} ->
       :ok = :file.close(fd)
-      GenServer.cast(state.housekeeper, {:file_closed, path(state, date)})
+      Housekeeper.file_closed(state.housekeeper, path(state, date))
     end)
 
     {:noreply, %{state | files: files, closed_through: max(state.closed_through, through)}}

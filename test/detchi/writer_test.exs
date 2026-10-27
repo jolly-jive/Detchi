@@ -91,6 +91,12 @@ defmodule Detchi.WriterTest do
              0o644
   end
 
+  test "asks the Housekeeper for the files before the date it started", %{tmp_dir: dir} do
+    start_writer(dir, "2026-10-24T00:00:05.000000+09:00")
+
+    assert_received {:"$gen_cast", {:compress_before, "core1", "2026-10-24"}}
+  end
+
   test "leaves out addr in start when the host has not resolved", %{tmp_dir: dir} do
     {writer, _} = start_writer(dir, "2026-10-23T21:00:00.000000+09:00")
 

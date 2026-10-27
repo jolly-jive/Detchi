@@ -14,10 +14,15 @@ defmodule Detchi.Application do
     # application, so that the table outlives the Resolvers.
     Detchi.Addresses.create()
 
-    # The registry comes first: the Writers register as they start.
+    config = Application.fetch_env!(:detchi, :config)
+
+    # The registry comes first: the Writers register as they start. The
+    # Housekeeper comes before the targets, as casts to a name not yet
+    # registered are lost.
     children = [
       Detchi.Registry,
-      {Detchi.Targets, config: Application.fetch_env!(:detchi, :config)}
+      {Detchi.Housekeeper, config: config},
+      {Detchi.Targets, config: config}
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: Detchi.Supervisor)
