@@ -69,6 +69,7 @@ To change the config, restart Detchi. SIGHUP does not reload it.
 ## Documents
 
 - [Configuration](docs/configuration.md): every key of the config file, the defaults, and how the file is checked.
+- [Records](docs/records.md): the record files, the lines, what the results mean, and how to read them.
 - [Basic design](docs/basic-design.md) (Japanese only): the background, the decisions, and what is still open.
 
 ## Koitohan
