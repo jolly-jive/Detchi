@@ -25,12 +25,16 @@ defmodule Detchi.CLI.CheckConfig do
         CLI.print_issues(warnings, path, :stdio)
         if opts[:fingerprints], do: Enum.each(config.targets, &print_fingerprint/1)
         probes = Enum.sum_by(config.targets, &length(&1.probes))
-        IO.puts("#{path}: ok (#{count(config.targets, "target")}, #{count(probes, "probe")})")
+
+        IO.puts(
+          "#{path}: ok (#{CLI.count(config.targets, "target")}, #{CLI.count(probes, "probe")})"
+        )
+
         0
 
       {:error, errors} ->
         CLI.print_issues(errors, path, :stderr)
-        IO.puts(:stderr, "#{path}: #{count(errors, "error")}")
+        IO.puts(:stderr, "#{path}: #{CLI.count(errors, "error")}")
         1
     end
   end
@@ -39,8 +43,4 @@ defmodule Detchi.CLI.CheckConfig do
     IO.puts("#{target.name} #{Fingerprint.hash(target)}")
     IO.puts("#{target.name} #{Fingerprint.canonical(target)}")
   end
-
-  defp count(list, noun) when is_list(list), do: count(length(list), noun)
-  defp count(1, noun), do: "1 #{noun}"
-  defp count(n, noun), do: "#{n} #{noun}s"
 end

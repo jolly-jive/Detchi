@@ -24,6 +24,23 @@ defmodule Detchi.EscriptTest do
              detchi(["check-config"], "/nonexistent")
   end
 
+  @tag :tmp_dir
+  test "status exits with 0 when every target is ok and 1 when not", %{tmp_dir: dir} do
+    config = Path.join(dir, "detchi.yml")
+
+    File.write!(config, """
+    data_dir: #{dir}/data
+    targets: [{ name: t, host: 192.0.2.1, probes: [{ name: ping, protocol: icmp }] }]
+    """)
+
+    assert {"stale  t  never written" <> _, 1} = detchi(["status"], config)
+
+    File.mkdir_p!(Path.join(dir, "data/t"))
+    File.touch!(Path.join(dir, "data/t/t-#{Date.utc_today()}.jsonl"))
+    assert {"ok     t  last " <> _, 0} = detchi(["status"], config)
+    assert {"", 0} = detchi(["status", "-q"], config)
+  end
+
   test "a usage error exits with 2" do
     assert {"Usage: detchi <command>" <> _, 2} = detchi(["bogus"], @sample)
   end

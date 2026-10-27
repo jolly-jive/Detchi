@@ -42,6 +42,7 @@ MIX_ENV=prod mix escript.build   # writes ./detchi
 ```sh
 ./detchi check-config            # check the config file
 ./detchi run                     # run as a service
+./detchi status                  # check that each target is being written to
 ```
 
 The config file is `$DETCHI_CONFIG`, or `/etc/detchi/detchi.yml`. A short example:

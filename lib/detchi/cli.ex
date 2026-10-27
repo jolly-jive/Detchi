@@ -11,7 +11,7 @@ defmodule Detchi.CLI do
   `-env` in the escript, which would win over the one of the user.
   """
 
-  alias Detchi.CLI.{CheckConfig, Run}
+  alias Detchi.CLI.{CheckConfig, Run, Status}
   alias Detchi.Config.Issue
 
   @version Mix.Project.config()[:version]
@@ -24,6 +24,9 @@ defmodule Detchi.CLI do
     check-config   Check the config file and exit
       --fingerprints   Also print the config fingerprint of each target
                        and the canonical JSON it is taken of
+    status         Print when each target was last written, and exit
+                   with 1 if one is stale
+      -q             Print only the stale targets
 
   Options:
     -h, --help     Show this help
@@ -53,6 +56,12 @@ defmodule Detchi.CLI do
       ["check-config", "--fingerprints"] ->
         CheckConfig.run(fingerprints: true)
 
+      ["status"] ->
+        Status.run()
+
+      ["status", "-q"] ->
+        Status.run(quiet: true)
+
       [help] when help in ["-h", "--help"] ->
         IO.write(@usage)
         0
@@ -70,6 +79,11 @@ defmodule Detchi.CLI do
   @doc "The version of Detchi."
   @spec version() :: String.t()
   def version, do: @version
+
+  @doc false
+  def count(list, noun) when is_list(list), do: count(length(list), noun)
+  def count(1, noun), do: "1 #{noun}"
+  def count(n, noun), do: "#{n} #{noun}s"
 
   @doc false
   def print_issues(issues, file, device) do

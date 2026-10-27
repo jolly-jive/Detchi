@@ -42,7 +42,10 @@ defmodule Detchi.CLITest do
             ["check-config", "--fingerprints", "extra"],
             ["--fingerprints", "check-config"],
             ["run", "--fingerprints"],
-            ["run", "x"]
+            ["run", "x"],
+            ["status", "--quiet"],
+            ["status", "-q", "extra"],
+            ["-q", "status"]
           ] do
         assert {2, "", "Usage: detchi <command>" <> _} = run(argv), inspect(argv)
       end
@@ -120,6 +123,15 @@ defmodule Detchi.CLITest do
       refute List.keymember?(Application.started_applications(), :detchi, 0)
       assert Process.whereis(Detchi.Supervisor) == nil
     end
+  end
+
+  test "status does not start the application" do
+    System.put_env("DETCHI_CONFIG", @sample)
+    assert {status, _, _} = run(["status", "-q"])
+    assert status in [0, 1]
+
+    refute List.keymember?(Application.started_applications(), :detchi, 0)
+    assert Process.whereis(Detchi.Supervisor) == nil
   end
 
   test "run exits with 1 on a config error, without starting the application" do

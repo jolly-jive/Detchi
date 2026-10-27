@@ -42,6 +42,7 @@ MIX_ENV=prod mix escript.build   # ./detchi ができる
 ```sh
 ./detchi check-config            # 設定ファイルを検査する
 ./detchi run                     # サービスとして動かす
+./detchi status                  # 機器ごとに記録が書かれ続けているか確かめる
 ```
 
 設定ファイルは `$DETCHI_CONFIG`、なければ `/etc/detchi/detchi.yml` です。短い例:

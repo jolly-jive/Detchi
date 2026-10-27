@@ -29,14 +29,10 @@ defmodule Detchi.Housekeeper do
   require Logger
 
   alias Detchi.Config
-  alias Detchi.Record
+  alias Detchi.{Record, RecordFiles}
 
   @sweep_interval_ms 24 * 60 * 60 * 1000
   @chunk_size 64 * 1024
-
-  @name_re ~r/\A[a-z0-9][a-z0-9._-]{0,62}\z/
-  # After `<target>-`. Only compressed files have `.part` ones.
-  @file_re ~r/\A(?<date>\d{4}-\d{2}-\d{2})\.jsonl(?:\.(?<ext>gz|zst)(?<part>\.part)?)?\z/
 
   @type option ::
           {:config, Config.t()}
@@ -149,7 +145,10 @@ defmodule Detchi.Housekeeper do
   defp targets(state) do
     case File.ls(state.data_dir) do
       {:ok, names} ->
-        Enum.filter(names, &(&1 =~ @name_re and File.dir?(Path.join(state.data_dir, &1))))
+        Enum.filter(
+          names,
+          &(RecordFiles.target_name?(&1) and File.dir?(Path.join(state.data_dir, &1)))
+        )
 
       {:error, :enoent} ->
         []
@@ -164,17 +163,11 @@ defmodule Detchi.Housekeeper do
   # {date, nil | "gz" | "zst", part?, path}.
   defp files(state, target) do
     dir = Path.join(state.data_dir, target)
-    prefix = target <> "-"
 
     case File.ls(dir) do
       {:ok, names} ->
-        for name <- names,
-            String.starts_with?(name, prefix),
-            rest = binary_part(name, byte_size(prefix), byte_size(name) - byte_size(prefix)),
-            %{"date" => date, "ext" => ext, "part" => part} <-
-              [Regex.named_captures(@file_re, rest)],
-            match?({:ok, _}, Date.from_iso8601(date)) do
-          {date, if(ext == "", do: nil, else: ext), part != "", Path.join(dir, name)}
+        for name <- names, {date, ext, part?} <- [RecordFiles.parse(target, name)] do
+          {date, ext, part?, Path.join(dir, name)}
         end
 
       {:error, :enoent} ->

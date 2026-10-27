@@ -40,6 +40,8 @@ MIX_ENV=prod mix escript.build   # writes ./detchi
 | `detchi run` | Runs as a service, recording measurements, until it is stopped. |
 | `detchi check-config` | Checks the config file and exits (see [Configuration](configuration.md#checking-the-file)). |
 | `detchi check-config --fingerprints` | Also prints the config fingerprint of each target. |
+| `detchi status` | Prints when each target was last written, and exits (see [Checking that Detchi is working](#checking-that-detchi-is-working)). |
+| `detchi status -q` | Prints only the targets that are not written to. |
 | `detchi --version` | Prints the version. |
 | `detchi --help` | Prints the usage. |
 
@@ -48,7 +50,7 @@ The config file is `$DETCHI_CONFIG`, or `/etc/detchi/detchi.yml`.
 | Exit status | |
 | --- | --- |
 | 0 | Success. For `detchi run`, it was stopped by SIGTERM or SIGHUP. |
-| 1 | An error: the config has errors, or `detchi run` could not start. |
+| 1 | An error: the config has errors, or `detchi run` could not start. For `detchi status`, also a target that is not written to. |
 | 2 | Wrong usage (an unknown command or option). |
 
 ## Starting
@@ -112,13 +114,27 @@ Credentials never appear in the log.
 
 Detchi writes a line for every measurement, failures included, so a target whose file is written to recently is being measured.
 
-A command for this, `detchi status`, is planned but not there yet. Until then, look at the modification time of the newest files of a target:
+`detchi status` checks this for each target in the config:
 
-```sh
-ls -lt --time-style=full-iso /var/lib/detchi/core1 | head -3
+```
+$ detchi status
+ok     core1  last 2026-10-24T01:23:45+09:00  age 12s    limit 121s
+stale  sw1    last 2026-10-24T01:05:02+09:00  age 1135s  limit 121s
+stale  sw2    never written                              limit 121s
 ```
 
-Just after midnight, the file of the previous day can be newer than the one of today. Look at the newest two.
+- `last` is when the files of the target were last modified, and `age` how long ago that was. Just after midnight, the file of the previous day can be newer than the one of today, so the files of the two latest dates are looked at.
+- A target is `stale` when `age` is longer than `limit`, or when it has never been written. `limit` is twice the shortest `interval` of its probes plus the longest `timeout`, and at least 30s. With the defaults (`interval` 60s, `timeout` 1s), it is 121s.
+- `-q` prints only the `stale` lines, and nothing when every target is `ok`.
+- It exits with 0 when every target is `ok`, and with 1 when a target is `stale`, or when it cannot tell: the config has errors, or a directory in `data_dir` cannot be read. Those errors, and the warnings of the config, go to stderr. A missing `data_dir` is not an error: every target is `never written`.
+- The exit status fits the `HEALTHCHECK` of a container, which takes 0 as healthy and 1 as unhealthy.
+
+`detchi status` reads the config file and `data_dir`, and writes nothing. It does not talk to the running Detchi: a Detchi that has stopped and one that is stuck look the same, not written to.
+
+Things to know:
+
+- It reads the config file as it is now. A target added without restarting Detchi is `never written`.
+- When the wall clock jumps forward (when chrony sets the clock of a machine without an RTC, for example), a target can look `stale` until its next line is written. A file modified in the future (the clock jumped back) counts as written now.
 
 ## What Detchi writes
 
@@ -127,7 +143,7 @@ Just after midnight, the file of the previous day can be newer than the one of t
 | `data_dir` | The records. Directories are 0755 and files 0644 whatever the umask is, so that other users can read and download them. |
 | The temporary directory | The files of the SNMP manager, a few KB, removed at a stop by SIGTERM or SIGHUP. A stop by another signal (SIGINT, for example) leaves the directory behind. |
 | stdout | The log. |
-| stderr | Errors that stop `detchi run` at startup, and the output of `detchi check-config` when there are errors. |
+| stderr | Errors that stop `detchi run` at startup, the output of `detchi check-config` when there are errors, and the errors and warnings of `detchi status`. |
 
 Detchi writes nothing else: no PID file, and no crash dump unless asked for (see [Crash dumps](#crash-dumps)).
 
