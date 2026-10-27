@@ -50,7 +50,8 @@ defmodule Detchi.Resolver do
     * `:name`: the name of the process.
     * `:table`: the address table. Defaults to `Detchi.Addresses`.
     * `:register`: called with an address before it goes to the table,
-      to register the target in `snmpm`. Does nothing for now.
+      to register the target in `snmpm`. Defaults to doing nothing, for
+      a target without SNMP.
     * `:lookup`: looks up a host name, as `:inet.getaddrs/3`. For tests.
     * `:first_retry_ms`: the first wait for retries while the host name
       has never resolved. For tests.

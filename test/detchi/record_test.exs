@@ -81,6 +81,7 @@ defmodule Detchi.RecordTest do
                probe: "if-uplink",
                protocol: :snmp,
                addr: {192, 0, 2, 1},
+               port: 161,
                status: :ok,
                rtt_us: 5678,
                snmp: %{
@@ -93,11 +94,29 @@ defmodule Detchi.RecordTest do
                  ]
                }
              }) ==
-               ~s({"v":1,"ts":"2026-10-23T21:00:00.140000+09:00","target":"core1","probe":"if-uplink","protocol":"snmp","addr":"192.0.2.1","status":"ok","rtt_us":5678,) <>
+               ~s({"v":1,"ts":"2026-10-23T21:00:00.140000+09:00","target":"core1","probe":"if-uplink","protocol":"snmp","addr":"192.0.2.1","port":161,"status":"ok","rtt_us":5678,) <>
                  ~s("snmp":{"version":"v2c","op":"get","varbinds":[) <>
                  ~s({"oid":"1.3.6.1.2.1.1.3.0","type":"TimeTicks","value":123456},) <>
                  ~s({"oid":"1.3.6.1.2.1.31.1.1.1.1.1","type":"OctetString","value":"Gi0/1"},) <>
                  ~s({"oid":"1.3.6.1.2.1.31.1.1.1.6.1","type":"Counter64","value":18446744073709551615}]}}\n)
+    end
+
+    test "SNMP lines without a reply, or with an errorStatus, have no varbinds" do
+      line = %{
+        ts: ts("2026-10-23T21:00:00.140000+09:00"),
+        target: "core1",
+        probe: "if-uplink",
+        protocol: :snmp,
+        addr: {192, 0, 2, 1},
+        port: 161,
+        snmp: %{version: :v2c, op: :get}
+      }
+
+      assert encode(Map.merge(line, %{status: :timeout, timeout_ms: 5000})) ==
+               ~s({"v":1,"ts":"2026-10-23T21:00:00.140000+09:00","target":"core1","probe":"if-uplink","protocol":"snmp","addr":"192.0.2.1","port":161,"status":"timeout","timeout_ms":5000,"snmp":{"version":"v2c","op":"get"}}\n)
+
+      assert encode(Map.merge(line, %{status: :error, rtt_us: 999, error: {:snmp, :tooBig, 0}})) ==
+               ~s({"v":1,"ts":"2026-10-23T21:00:00.140000+09:00","target":"core1","probe":"if-uplink","protocol":"snmp","addr":"192.0.2.1","port":161,"status":"error","rtt_us":999,"error":{"reason":"snmp","error_status":"tooBig","error_index":0},"snmp":{"version":"v2c","op":"get"}}\n)
     end
 
     test "leave out addr when the host name has never resolved" do

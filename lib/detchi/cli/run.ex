@@ -6,6 +6,10 @@ defmodule Detchi.CLI.Run do
   the application is stopped, its children's `terminate/2` run, and the
   VM exits with 0 (docs/basic-design.md, 3).
 
+  The application and `snmp`, which it needs, are started as permanent:
+  if either stops, so does the VM, to be restarted from outside, rather
+  than staying up and measuring nothing (docs/basic-design.md, 3.1).
+
   Before it starts, it checks that ICMP sockets can be opened for the
   ICMP probes (docs/basic-design.md, 4): if not, every ICMP line would be
   a failure, and the records would still look alive to `detchi status`.
@@ -13,7 +17,7 @@ defmodule Detchi.CLI.Run do
 
   require Logger
 
-  alias Detchi.{CLI, Config, Icmp}
+  alias Detchi.{CLI, Config, Icmp, Snmp}
   alias Detchi.Config.Issue
 
   @spec run() :: 1 | no_return()
@@ -24,12 +28,13 @@ defmodule Detchi.CLI.Run do
       {:ok, config, warnings} ->
         Enum.each(warnings, &Logger.warning(Issue.format(&1, path)))
 
-        case check_icmp(config) do
-          :ok ->
-            Application.put_env(:detchi, :config, config)
-            {:ok, _} = Application.ensure_all_started(:detchi)
-            Process.sleep(:infinity)
-
+        with :ok <- check_icmp(config),
+             {:ok, snmp_dir} <- Snmp.configure(System.tmp_dir!()) do
+          Application.put_env(:detchi, :config, config)
+          Application.put_env(:detchi, :snmp_dir, snmp_dir)
+          {:ok, _} = Application.ensure_all_started(:detchi, :permanent)
+          Process.sleep(:infinity)
+        else
           {:error, message} ->
             IO.puts(:stderr, "detchi: #{message}")
             1

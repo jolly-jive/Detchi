@@ -136,9 +136,16 @@ defmodule Detchi.Record do
   defp value(:error, error, _), do: {:object, error_pairs(error)}
   defp value(:udp, %{service: service}, _), do: {:object, [service: service]}
 
-  defp value(:snmp, %{version: version, op: op, varbinds: varbinds}, _) do
-    varbinds = Enum.map(varbinds, &{:object, varbind_pairs(&1)})
-    {:object, [version: version, op: op, varbinds: varbinds]}
+  # Lines without a reply, or with an errorStatus, have no varbinds.
+  defp value(:snmp, %{version: version, op: op} = snmp, _) do
+    case snmp do
+      %{varbinds: varbinds} ->
+        varbinds = Enum.map(varbinds, &{:object, varbind_pairs(&1)})
+        {:object, [version: version, op: op, varbinds: varbinds]}
+
+      _ ->
+        {:object, [version: version, op: op]}
+    end
   end
 
   defp value(_, value, _) when is_atom(value) or is_binary(value) or is_integer(value),

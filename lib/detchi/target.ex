@@ -11,11 +11,14 @@ defmodule Detchi.Target do
 
   The Writer is registered in `Detchi.Registry`, and the others are given
   its name, so that they reach the Writer after it is restarted.
+
+  A target with `snmp` is registered in `snmpm` by its Resolver, at each
+  address before the address goes to the table.
   """
 
   use Supervisor
 
-  alias Detchi.{Probes, Resolver, Writer}
+  alias Detchi.{Probes, Resolver, Snmp, Writer}
   alias Detchi.Config.Target
 
   @type option ::
@@ -69,6 +72,7 @@ defmodule Detchi.Target do
         resolve_interval_ms: Keyword.fetch!(opts, :resolve_interval_ms),
         table: table
       ]
+      |> Keyword.merge(register(target))
       |> Keyword.merge(Keyword.get(opts, :resolver_opts, []))
 
     probes_opts = [
@@ -83,4 +87,7 @@ defmodule Detchi.Target do
       strategy: :rest_for_one
     )
   end
+
+  defp register(%Target{snmp: nil}), do: []
+  defp register(%Target{name: name, snmp: snmp}), do: [register: &Snmp.register(name, &1, snmp)]
 end

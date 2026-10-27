@@ -4,6 +4,11 @@ defmodule Detchi.CLI do
 
   The escript is built with `app: nil`, so nothing is started before
   `main/1`; only `detchi run` starts the application.
+
+  Crash dumps are not written unless `ERL_CRASH_DUMP_SECONDS` is set:
+  they hold the heaps of processes, and so the credentials of the config
+  (docs/basic-design.md, 3). It is set at run time rather than with
+  `-env` in the escript, which would win over the one of the user.
   """
 
   alias Detchi.CLI.{CheckConfig, Run}
@@ -28,7 +33,12 @@ defmodule Detchi.CLI do
   """
 
   @spec main([String.t()]) :: no_return()
-  def main(argv), do: System.halt(run(argv))
+  def main(argv) do
+    unless System.get_env("ERL_CRASH_DUMP_SECONDS"),
+      do: System.put_env("ERL_CRASH_DUMP_SECONDS", "0")
+
+    System.halt(run(argv))
+  end
 
   @doc "Runs a command and returns the exit status."
   @spec run([String.t()]) :: non_neg_integer()

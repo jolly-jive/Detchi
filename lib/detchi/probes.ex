@@ -3,8 +3,6 @@ defmodule Detchi.Probes do
   The supervisor of the probes of one target (docs/basic-design.md, 3.1),
   one `Detchi.Probe` each, under `one_for_one`, so that a probe that
   fails does not take the others with it.
-
-  Probes of protocols that are not implemented yet are not started.
   """
 
   use Supervisor
@@ -30,14 +28,12 @@ defmodule Detchi.Probes do
     %Target{} = target = Keyword.fetch!(opts, :target)
 
     common =
-      [target: target.name, writer: Keyword.fetch!(opts, :writer)]
+      [target: target.name, writer: Keyword.fetch!(opts, :writer), snmp: target.snmp]
       |> Keyword.merge(Keyword.take(opts, [:table]))
       |> Keyword.merge(Keyword.get(opts, :probe_opts, []))
 
     children =
-      for probe <- target.probes, Probe.implemented?(probe) do
-        {Probe, [probe: probe] ++ common}
-      end
+      for probe <- target.probes, do: {Probe, [probe: probe] ++ common}
 
     Supervisor.init(children, strategy: :one_for_one)
   end

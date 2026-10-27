@@ -40,6 +40,7 @@ defmodule Detchi.Probe do
           | {:probe, ProbeConfig.t()}
           | {:writer, GenServer.server()}
           | {:table, atom()}
+          | {:snmp, Detchi.Config.Target.snmp() | nil}
           | {:measure, measure()}
 
   @doc """
@@ -51,6 +52,7 @@ defmodule Detchi.Probe do
     * `:probe` (required): the probe, as in the config.
     * `:writer` (required): the Writer of the target.
     * `:table`: the address table. Defaults to `Detchi.Addresses`.
+    * `:snmp`: the `snmp` of the target, for an SNMP probe.
     * `:measure`: runs one attempt, as `Detchi.Icmp.measure/2`. Defaults
       to the one of the protocol. For tests.
   """
@@ -62,10 +64,6 @@ defmodule Detchi.Probe do
     %ProbeConfig{name: name} = Keyword.fetch!(opts, :probe)
     %{id: {__MODULE__, name}, start: {__MODULE__, :start_link, [opts]}}
   end
-
-  @doc "Whether the protocol of a probe is implemented yet."
-  @spec implemented?(ProbeConfig.t()) :: boolean()
-  def implemented?(%ProbeConfig{protocol: protocol}), do: protocol in [:icmp, :tcp, :udp]
 
   @doc """
   The phase of a probe in milliseconds, from 0 to `interval_ms - 1`.
@@ -99,13 +97,15 @@ defmodule Detchi.Probe do
 
     %ProbeConfig{} = probe = Keyword.fetch!(opts, :probe)
     target = Keyword.fetch!(opts, :target)
+    snmp = Keyword.get(opts, :snmp)
 
     state = %{
       target: target,
       probe: probe,
       writer: Keyword.fetch!(opts, :writer),
       table: Keyword.get(opts, :table, Addresses),
-      measure: Keyword.get_lazy(opts, :measure, fn -> measure(probe) end),
+      snmp: snmp,
+      measure: Keyword.get_lazy(opts, :measure, fn -> measure(probe, target, snmp) end),
       due: nil,
       # nil, or %{task: Task.t(), addr: address, ts: system time, timer: ref}.
       attempt: nil
@@ -163,9 +163,14 @@ defmodule Detchi.Probe do
 
   def terminate(_reason, _state), do: :ok
 
-  defp measure(%ProbeConfig{protocol: :icmp}), do: &Detchi.Icmp.measure/2
-  defp measure(%ProbeConfig{protocol: :tcp}), do: &Detchi.Tcp.measure/2
-  defp measure(%ProbeConfig{protocol: :udp}), do: &Detchi.Udp.measure/2
+  defp measure(%ProbeConfig{protocol: :icmp}, _, _), do: &Detchi.Icmp.measure/2
+  defp measure(%ProbeConfig{protocol: :tcp}, _, _), do: &Detchi.Tcp.measure/2
+  defp measure(%ProbeConfig{protocol: :udp}, _, _), do: &Detchi.Udp.measure/2
+
+  # snmpm sends to the address the target is registered at, and the
+  # line tells which (Detchi.Snmp.measure/3).
+  defp measure(%ProbeConfig{protocol: :snmp}, target, %{credential: %{version: version}}),
+    do: fn _addr, probe -> Detchi.Snmp.measure(target, version, probe) end
 
   defp schedule(state, due) do
     Process.send_after(self(), :tick, due, abs: true)
@@ -235,11 +240,19 @@ defmodule Detchi.Probe do
           port: probe.port,
           udp: probe.service && %{service: probe.service}
         },
-        result
+        protocol_fields(probe, state.snmp)
       )
+      |> Map.merge(result)
 
     Writer.write(state.writer, record)
   end
+
+  # An SNMP line without a result from snmpm still tells the port and
+  # what was asked.
+  defp protocol_fields(%ProbeConfig{protocol: :snmp}, %{credential: credential, port: port}),
+    do: %{port: port, snmp: %{version: credential.version, op: :get}}
+
+  defp protocol_fields(_probe, _snmp), do: %{}
 
   # The Writer may have gone first, when it fails and takes the Probes
   # down with it.
