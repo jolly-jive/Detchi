@@ -173,6 +173,13 @@ flowchart LR
   - プロセスの優先度を `low` にする。RTT は BEAM の中の時計で測るので、圧縮で scheduler が埋まると RTT に遅れが乗るため。
   - 止まるときに圧縮の途中なら、shutdown のタイムアウトで kill されてよい。残った `.part` は、次の起動のときに消してやり直す(6.2 節)。
 - **Clock もシステム全体で1つ。** 壁時計が跳んだら、Registry で全機器の Writer を引き、`clock_stepped` の行(6.1 節)を書かせる。
+  - 1 秒ごとに、壁時計と単調な時計の差(`System.os_time - System.monotonic_time`)を取り、前の回の差と比べる。違いの絶対値が 1 秒以上なら、その違いを `offset_us` にして書かせる。
+    - 最初の差ではなく前の回の差と比べるので、chrony が少しずつ寄せる分は積み上がらない。Linux の `CLOCK_MONOTONIC` は寄せる調整に一緒について動くので、そもそも差にはほとんど出ない。
+    - 1 秒より短い間に跳んで戻ったものは見えない。その間の `ts` はずれるが、記録には残らない。割り切る。
+  - `erlang:monitor(time_offset, clock_service)` は使わない。VM の時間のオフセットは、OS の壁時計に遅れて寄るだけなので(2026-10-27 に WSL2、OTP 29 の `multi_time_warp` で確かめた)。
+    - 壁時計がステップしても、オフセットとその知らせはすぐには動かなかった。動いたのは 16 秒後で、2 回目は 30 秒以上待っても来なかった。
+    - `ts` は `System.os_time`(`CLOCK_REALTIME` を直に読む)で取るので、跳んだ瞬間に跳ぶ。知らせが来るころには遅い。
+  - WSL2 では、`date -s` で跳ばした時計を、Hyper-V の時刻合わせが 0.4〜0.5 秒で戻した(ジャーナルで確かめた)。1 秒ごとの比較には、戻したときの残り(0.14 秒、0.21 秒)だけが見え、閾値より小さいので書かない。跳んだままになる場合はこの環境では試せないので、テストで時計を注入して確かめ、実機では Koitohan に組み込むときに確かめる。
 - **Registry に登録するのは Writer だけ。** キーは機器の名前。Resolver や Probe を pid で引く者はいない(Probe はアドレスを ETS から読む)。Housekeeper と Clock は、1つずつなので名前を固定する。
   - Resolver と Probe には、Writer の pid ではなく、Registry を通した名前(`{:via, Registry, ...}`)を渡す。機器の子の定義は、起動する前に組むので、その時点では pid がない。名前なら、Writer が起動し直して pid が変わっても使える。
   - 起動し直した Writer は、古い登録が消える前でも、同じ名前で登録できる(Elixir の `Registry` は、登録している pid が死んでいれば消して登録し直す。2026-10-26 にテストで確かめた)。
@@ -465,7 +472,7 @@ NexPinger(`lib/nexpinger/prober.ex`)は `:gen_tcp.connect/4` でつなぎ、つ�
   | `dropped` | `count`、`first_ts`、`last_ts` | ドロップが収まって書けるようになったとき、まとめて1行。`first_ts` と `last_ts` は落とした行の `ts` の範囲。 |
   | `resolve_failed` | `host`、`error`、`addr` | 引き直しに失敗するたびに書く。起動のときの最初の失敗でも、`start` の後に書く(`errno` が測定の行にしか残らないことにならないように)。`error` の `reason` は `resolve`。`addr` は使い続けているアドレスで、一度も引けていなければ書かない。 |
   | `addr_changed` | `host`、`old`、`new` | 引き直したアドレスが変わったとき。初めて引けたときは `old` を省く。 |
-  | `clock_stepped` | `offset_us` | 壁時計が大きく跳んだとき(単調な時計と比べて見つける)。chrony が時刻を合わせる前に起動すると `ts` が跳ぶので、その説明になる。閾値は 1 秒(chrony が少しずつ寄せる調整は拾わず、跳んだときだけ書く)。見つけ方(`erlang:monitor(time_offset, clock_service)` を使うか、定期的に比べるか)は、実装のときに試す。 |
+  | `clock_stepped` | `offset_us` | 壁時計が大きく跳んだとき(単調な時計と比べて見つける)。chrony が時刻を合わせる前に起動すると `ts` が跳ぶので、その説明になる。閾値は 1 秒(chrony が少しずつ寄せる調整は拾わず、跳んだときだけ書く)。`offset_us` は跳んだ量で、進んだら正、戻ったら負。見つけ方は 3.1 節(Clock)。 |
 
   ```json
   {"v":1,"ts":"2026-10-23T21:00:00.000000+09:00","target":"core1","event":"start","version":"0.1.0","config_hash":"sha256:3f9a...","addr":"192.0.2.1"}
@@ -862,7 +869,6 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
 - スキーマの細部(6.1 節)。
   - `snmpm` が v3 の report PDU をどんな形で返すか(`snmp_report` の行を書くため)。
   - 同じアドレスとポートの機器が2つあるとき、v3 で困るか(5 節。アドレスから機器の名前を引く表が上書きされる)。困るなら、設定の検査で禁じる。
-  - `clock_stepped` の見つけ方。
 - プロセスの構成の細部(3.1 節)。
   - 背圧によるドロップを判断する場所:Writer がディスクで詰まると、自分のメールボックスを捌けない。送る側で Writer のキューの長さを見て落とし、落とした数をカウンター(`atomics` など)で Writer に伝える形が考えられる。`dropped` の `first_ts` と `last_ts` も同じように渡す。Writer の中で書けなかった行の数え方(3.1 節)とは、1つの `dropped` の行にまとめる。
 - 手元のファイアウォールに落とされたときの errno(`eperm`)の扱い。
