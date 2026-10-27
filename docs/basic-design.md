@@ -59,6 +59,12 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
     - 起動の時間は、開発の PC で 0.44 秒(Raspberry Pi は未計測)。
     - 実行には Erlang/OTP 28 以上が要る(escript は ERTS を含まない)。先頭の行は `#! /usr/bin/env escript` なので、`escript` が `PATH` にあること。
     - escript は `priv` を扱えないが、Detchi は `priv` を使わない。`config/runtime.exs` も使えないが、設定は YAML と環境変数なので要らない。
+  - **`erl_crash.dump` は書かない**(`ERL_CRASH_DUMP_SECONDS=0`)。
+    - ダンプにはプロセスのヒープが入り、設定の資格情報(community)も入る。項は base64 で書かれるので平文の grep では見つからないが、戻せば読める(2026-10-27 に、バイナリと charlist の両方で確かめた)。資格情報をどこにも出さないという決め(7.8 節)に反する。
+    - 既定では作業ディレクトリに書くが、`read_only: true`(9.1 節)の下では書けない。`/tmp` に向けても、tmpfs はコンテナが止まると消えるので、起動し直した後には残らない見込み。大きさも数 MB あり(spike で 3〜4MB)、tmpfs は RAM を使う。
+    - 止まった理由は、止まる前に標準出力のログに出る(`Kernel pid terminated ...` など)ので、ダンプがなくても分かる。
+    - 調べるためにダンプが要るときは、利用者が `ERL_CRASH_DUMP` と `ERL_CRASH_DUMP_SECONDS` を付けて動かす。中に資格情報が入ることを、利用者向けの文書に書く。
+    - 既定を escript の側で決める方法(`mix.exs` の `emu_args:` に `-env ERL_CRASH_DUMP_SECONDS 0` と書く、など)と、外から渡した環境変数とどちらが勝つかは、実装のときに確かめる。
 
 ### 3.1 プロセスの構成(案)
 
@@ -104,6 +110,11 @@ flowchart LR
 
 - `snmp` アプリケーションは、`snmpm` の設定を書き出してから、Detchi のアプリケーションより先に起動する(3 節、5 節)。Detchi の監督ツリーの外にある。
   - タイムアウトの後に届いた応答を捨てる user のモジュール(`handle_pdu/4`。5 節)は、Detchi のプロセスではなく、`snmpm` のプロセスの中で呼ばれる。
+  - **`snmpm` が落ちたら、VM ごと止める。** マネージャーを `restart_type` が `permanent` で起動し、`snmp` と `detchi` のアプリケーションを `:permanent` で起動する。止まった後は、`restart: unless-stopped`(9.1 節)などの外の仕組みに起動し直してもらう。
+    - `snmpm` の監督は `one_for_all` で再起動の上限が 0 なので、`snmpm_config` が落ちると、マネージャーの監督ごと消える(2026-10-27 に確かめた。`snmpm_server` だけが落ちたときは起動し直し、登録も残った)。マネージャーの既定の `restart_type` は `transient` で、そのときは `snmp` のアプリケーションは動いたままになり、その後の `sync_get2` はずっと `{noproc, ...}` で exit する。測れないまま記録だけが書かれ続け、`detchi status` でも気づけない。
+    - `restart_type` を `permanent` にすると `snmp` のアプリケーションが止まり、`snmp` を `:permanent` で起動していれば VM が止まる(`Kernel pid terminated (application_controller) ("{application_terminated,snmp,shutdown}")`、終了コード 1。確かめた)。
+    - マネージャーの監督を起動し直して、user と機器を登録し直す案は採らなかった。登録は `snmpm_config` の ETS にあり、一緒に消えるので、登録し直す者と時を決める仕組みが要る。起きることはまずないので、VM ごと起動し直すほうが単純。
+    - 同じ理由で、`detchi` のアプリケーションも `:permanent` で起動する。既定の `:temporary` では、Detchi の監督の木がまるごと落ちても、`detchi run` は `Process.sleep(:infinity)` で待ったまま VM が残る。
 - **機器ごとに Writer を1つ置く。** 機器のファイルに書くのは Writer だけ。
   - 出来事の行を機器ごとのファイルに書き、背圧によるドロップも機器ごとの書き込みで起きる(6.1 節)ので、それに合わせた。
   - 日の切り替え、前日のファイルを開いておくこと、`file_opened` の行(6.2 節)も Writer が受け持つ。前日のファイルを閉じたら Housekeeper に知らせる。
@@ -118,7 +129,12 @@ flowchart LR
 - **Resolver も機器ごとに1つ置く。** `host` が IP アドレスでも置き、アドレスを持つだけにする(機器による違いを Probe に見せない)。
   - アドレスが変わったら、`snmpm` に機器を登録し直す(`snmpm:register_agent/3` はアドレスで登録するため。5 節)。
     - 登録してから表に入れる。SNMP の Probe が、まだ登録していないアドレスで `sync_get2` しないように。
-    - 登録は SNMP を実装するときに足す。それまでは、Resolver に登録の関数を渡す口だけを置き、何もしない。アドレスを `snmpm:update_agent_info/4` で差し替えられるか、`unregister_agent` してから登録し直すかは、そのときに確かめる。
+    - **登録は、いつも前の登録を消してから行う**(`unregister_agent` してから `register_agent`。前の登録がなければ、`unregister_agent` は `{error, not_found}` を返すだけなので、それは無視する)。最初の起動、Resolver の起動し直し、アドレスが変わったときを、同じ処理で扱う。
+      - `snmpm:update_agent_info/4` でアドレスを差し替える案は採らなかった。差し替えた後も新しいアドレスへ送れるが、`snmpm` がアドレスから機器の名前を引く表(`{Domain, Address, target_name}`)は古いアドレスのまま残り、新しいアドレスの分は足されない(2026-10-27 に確かめた)。v2c の応答は要求の ID で照合するので困らないが、v3 の engine ID の確かめ(`snmpm_config:is_known_engine_id/3`)はこの表を引く。
+      - 消してから登録するまでの間に `sync_get2` すると `{error, not_found}` が返る(その回は `internal` の行になる)。間はマイクロ秒の単位なので、受け入れる。すでに送った要求は、間をまたいでも応答を受け取れる(要求の ID で照合するため。応答を遅らせる中継を挟んで確かめた)。
+      - Resolver が落ちて起動し直しても、`snmpm` には前の登録が残っている。そのまま `register_agent` すると `{error, {already_registered, 名前}}` が返り、それを失敗とすると、Resolver は起動し直すたびに落ちて、機器の監督ごと止まる(SNMP 以外の測定も止まる)。
+      - `already_registered` を成功とみなして前の登録を使う案は採らなかった。起動し直したときの名前解決でアドレスが変わっていれば(ラウンドロビンの DNS など)、`snmpm` は前のアドレスへ送り続け、行の `addr` とずれる。
+      - 下の表に前のアドレスが残ることを受け入れたのとは別の話。表は残っても測った値が正しいが、登録は残っていると起動できない。
 - **Probe はアドレスを ETS から読む。** システム全体で1つの表に、機器の名前ごとに、使うアドレスか、一度も引けていないこと(`{:unresolved, errno}`)を入れる。
   - 書くのは Resolver だけで、Probe は測るたびに読む。Probe は Resolver に call しないので、Resolver が名前解決で待っている間も Probe は止まらない。Resolver が Probe の pid を知る必要もない。
   - 引き直しに失敗しても、表のアドレスは書き換えない(前のアドレスで測り続ける。7.6 節)。`{:unresolved, errno}` になるのは、起動してから一度も引けていないときだけ。引けなかった理由は `resolve_failed` の行に書く。
@@ -274,6 +290,14 @@ NexPinger(`lib/nexpinger/prober.ex`)は `:gen_tcp.connect/4` でつなぎ、つ�
   - マネージャーの最大の大きさ(`max_message_size`)は 65535 にする。要求がこれを超えると、マネージャーは送る前に断る(`send_failed`)。応答の大きさの判断は、エージェントに任せる(超えれば `tooBig` が返る)。
   - 機器は `snmpm:register_agent/3` で登録し、`snmpm:sync_get2/4` で取る。応答は `{varbind, OID, 型, 値, 番号}` の並びで、型は `'OCTET STRING'`、`'OBJECT IDENTIFIER'`、`'INTEGER'` などの atom、例外は型が `'NULL'` で値が `noSuchObject` などの形。記録の型の名前(6.1 節)への対応表を実装に持つ。OctetString の値は charlist で返る。
   - タイムアウトの後に届いた応答は、user のモジュールの `handle_pdu/4` に渡る。捨てる。
+  - `sync_get2` の返り値(2026-10-27 に、同じ VM に立てた `snmpa` を相手に確かめた)
+    - 応答:`{ok, {ErrorStatus, ErrorIndex, Varbinds}, Remaining}`。誤りがなければ `{noError, 0, [...]}`、`tooBig` なら `{tooBig, 0, []}`。
+    - 応答がない:`{error, {timeout, ReqId}}`。500ms を指定して 500.3ms で返った。
+    - 登録していない機器:`{error, not_found}`。
+    - 要求が `max_message_size` を超える:`{error, {send_failed, ReqId, tooBig}}`。
+    - `snmpm` は再送しない。community を誤った要求を 3 秒待つ間に、エージェントの `snmpInBadCommunityNames` は 1 だけ増えた。7.4 節の「再送 0 回」は、何も設定しなくてもそうなる。
+  - **機器が受け付けられる大きさを超える要求は、`tooBig` ではなく `timeout` になる。** エージェントの最大の大きさを 484 にして、約 39KB の要求(OID 3000 個)を送ると、エージェントは黙って捨てた。`tooBig` は応答が大きすぎるときにだけ返る。OID を多く入れすぎた測定が `timeout` になりうることを、利用者向けの文書に書く。
+  - 同じアドレスとポートに2つの機器を登録すると、アドレスから機器の名前を引く表(3.1 節)は、後に登録したほうで上書きされる。片方を消すと、もう片方の分も消える(確かめた)。v2c では困らないので、設定の検査では禁じない。v3 で効くかは 10 節。
   - **SNMP の行の `status` は `ok`、`timeout`、`error` だけになる。** `snmpm` のソケットは機器ごとに connect していないので、ICMP の誤り(Port Unreachable など)が見えない。エージェントがいない、ポートが閉じている、community が誤っている、のどれも `timeout` になる。利用者向けの文書に書く。
   - **RTT には `snmpm` の処理の時間が含まれる。** `sync_get2` の前後で測るので、マネージャーの内部のプロセスを渡る時間が入る。ループバックで 0.3〜1.1ms(ICMP は 0.15ms)。利用者向けの文書に書く。
     - `snmpm` は自分のプロセスの中で要求を組み立てて送るので、本当に送った時刻は Detchi から取れない。`ts` と RTT の起点は `sync_get2` を呼ぶ直前にする(3.1 節)。要求の組み立て(v3 では認証と暗号の計算も)が RTT に入る。v3 の分は、v3 を実装するときに測る。
@@ -305,7 +329,7 @@ NexPinger(`lib/nexpinger/prober.ex`)は `:gen_tcp.connect/4` でつなぎ、つ�
 {"v":1,"ts":"2026-10-23T21:01:00.120001+09:00","target":"core1","probe":"ping","protocol":"icmp","addr":"192.0.2.1","status":"timeout","timeout_ms":1000}
 {"v":1,"ts":"2026-10-23T21:00:00.130000+09:00","target":"core1","probe":"dns","protocol":"udp","addr":"192.0.2.1","port":53,"status":"ok","rtt_us":2345,"udp":{"service":"dns"}}
 {"v":1,"ts":"2026-10-23T21:00:00.135000+09:00","target":"core1","probe":"ssh","protocol":"tcp","addr":"192.0.2.1","port":22,"status":"refused","rtt_us":456,"error":{"reason":"errno","errno":"econnrefused"}}
-{"v":1,"ts":"2026-10-23T21:00:00.140000+09:00","target":"core1","probe":"if-uplink","protocol":"snmp","addr":"192.0.2.1","status":"ok","rtt_us":5678,
+{"v":1,"ts":"2026-10-23T21:00:00.140000+09:00","target":"core1","probe":"if-uplink","protocol":"snmp","addr":"192.0.2.1","port":161,"status":"ok","rtt_us":5678,
  "snmp":{"version":"v2c","op":"get","varbinds":[
    {"oid":"1.3.6.1.2.1.1.3.0","type":"TimeTicks","value":123456},
    {"oid":"1.3.6.1.2.1.31.1.1.1.1.1","type":"OctetString","value":"Gi0/1"},
@@ -328,7 +352,7 @@ NexPinger(`lib/nexpinger/prober.ex`)は `:gen_tcp.connect/4` でつなぎ、つ�
 | `probe` | 設定に付けた測定の名前。 |
 | `protocol` | `icmp`、`tcp`、`udp`、`snmp`。将来は `gnmi`、`netconf` も入る。 |
 | `addr` | 実際に送った宛先の IP アドレス(名前ではない。DNS の答えが変わっても、何を測ったかが分かるように)。IPv6 は RFC 5952 の正規形(英小文字で、ゼロを省略する形)。末尾を点で区切って書くのは IPv4 射影(`::ffff:192.0.2.1`)だけで、廃止された IPv4 互換(`::/96`)は16進で書く(`::c000:201`。`:inet.ntoa` は `::192.0.2.1` と書くので使わない)。 |
-| `port` | TCP、UDP の宛先のポート。 |
+| `port` | TCP、UDP、SNMP の宛先のポート。SNMP では機器の `snmp.port`(7.2 節)。161 でないポートを使う機器でも、何を測ったかが行から分かるように。 |
 | `status` | `ok`、`timeout`、`unreachable`、`refused`、`error` のどれか。 |
 | `rtt_us` | 要求を送ってから応答を受けるまでの時間。マイクロ秒の整数。SNMP の行にも付ける。ネットワークから何か返ってきたと分かるときだけ付ける(`ok`、TCP の RST、ネットワークから届いた ICMP の誤り、SNMP の `errorStatus`)。ICMP の誤りが手元で作られたとき(`error` の `from` が自分のアドレス。ARP が引けなかったときなど)と、`reason` が `errno` の `unreachable` には付けない(その時間は RTT ではないため)。 |
 | `timeout_ms` | `status` が `timeout` のときの、待った時間。 |
@@ -786,7 +810,7 @@ Koitohan は、Detchi がリリースされたら組み込む予定で、組み�
 
 - Koitohan のスモークテストでは、問い合わせ先として snmpd のコンテナを立て、Detchi が記録することを確かめることになる。
 - 資格情報がログに出ていないことも、Koitohan の側で確かめる(OpenLDAP の管理者のパスワードと同じ確認)。
-- Detchi 自身のテストでは、SNMP の相手に OTP の `snmpa`(エージェント)をテストの中で立てる。snmpd が要らず、`noSuchObject`、`noSuchInstance`、`tooBig`、community の誤りを手元で起こせる(5 節。spike で確かめた)。
+- Detchi 自身のテストでは、SNMP の相手に OTP の `snmpa`(エージェント)をテストの中で立てる。snmpd が要らず、`noSuchObject`、`noSuchInstance`、`tooBig`、community の誤りを手元で起こせる(5 節。spike で確かめた)。`snmpa` とマネージャー(`snmpm`)は同じ VM で動く(2026-10-27 に確かめた)ので、テストのために別の VM を立てなくてよい。
 
 ### 9.7 Koitohan の側の参照先
 
@@ -807,6 +831,7 @@ Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
     - YAML のエイリアス(`*switch` など)で使い回した測定の誤りは、アンカーの位置を指すので、同じ位置が `targets[1]` と `targets[2]` で2回出る。エイリアスの位置も示すには、`yamerl_constr` が返す木にはエイリアスの情報が残らないので、パーサーのトークンを見る別の作業が要る。
 - スキーマの細部(6.1 節)。
   - `snmpm` が v3 の report PDU をどんな形で返すか(`snmp_report` の行を書くため)。
+  - 同じアドレスとポートの機器が2つあるとき、v3 で困るか(5 節。アドレスから機器の名前を引く表が上書きされる)。困るなら、設定の検査で禁じる。
   - `clock_stepped` の見つけ方。
 - プロセスの構成の細部(3.1 節)。
   - 背圧によるドロップを判断する場所:Writer がディスクで詰まると、自分のメールボックスを捌けない。送る側で Writer のキューの長さを見て落とし、落とした数をカウンター(`atomics` など)で Writer に伝える形が考えられる。`dropped` の `first_ts` と `last_ts` も同じように渡す。Writer の中で書けなかった行の数え方(3.1 節)とは、1つの `dropped` の行にまとめる。
