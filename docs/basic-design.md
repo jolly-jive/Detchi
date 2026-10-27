@@ -55,6 +55,9 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
   - escript の注意(2026-10-24 に確かめた)
     - `mix.exs` の `escript:` に **`app: nil`** を書く。書かないと、escript は `main/1` の前に自分のアプリケーションを起動するので、`check-config` や `status` でも監督ツリーが動き、測定が始まってしまう。アプリケーションは `run` の中で自分で起動する(`snmpm` の設定を書き出したあと。5 節)。監督ツリーを起動しないことはテストで確かめる。
     - SIGTERM は OTP の既定の処理で `init:stop` になり、監督ツリーの子の `terminate/2` が呼ばれる(`stop` の行はここで書く。7.9 節)。終了コードは 0。
+    - SIGHUP と SIGINT は、何もしなければ `stop` の行を書かずにその場で止まる(終了コード 129 と 130。2026-10-28 に確かめた)。
+      - SIGHUP は、`os:set_signal(sighup, handle)` で `erl_signal_server` に渡し、足したハンドラー(`Detchi.Signals`)で `init:stop` を呼ぶ。SIGTERM と同じく、終了コード 0 で `stop` の行を書いて止まる。
+      - SIGINT は同じようにできない。`os:set_signal/2` は `sigint` を受け付けず(`invalid signal name`)、SIGINT は ERTS のブレークハンドラーが扱う。escript は `+B`(既定の `+Bd`)で動くので、その場で止まる。`+Bi` なら無視、`+Bc` なら BREAK のメニューが出るだけで、どれも `init:stop` にはならない。端末で Ctrl-C を押すと `stop` の行が残らないことを、文書に書く。
     - 捕まえていない例外は終了コード 1、`System.halt/1` の値はそのまま終了コードになる。Erlang の分散と epmd は動かない。
     - 起動の時間は、開発の PC で 0.44 秒(Raspberry Pi は未計測)。
     - 実行には Erlang/OTP 28 以上が要る(escript は ERTS を含まない)。先頭の行は `#! /usr/bin/env escript` なので、`escript` が `PATH` にあること。
@@ -468,7 +471,7 @@ NexPinger(`lib/nexpinger/prober.ex`)は `:gen_tcp.connect/4` でつなぎ、つ�
   | --- | --- | --- |
   | `start` | `version`、`config_hash`、`addr` | 起動したとき。 |
   | `file_opened` | `version`、`config_hash`、`addr` | 日が替わって新しいファイルを開いたとき。起動のときは書かない(`start` が代わりになる)。 |
-  | `stop` | `abandoned` | SIGTERM で止まるとき。`abandoned` は、結果を待たずに打ち切った要求の数(7.9 節)。 |
+  | `stop` | `abandoned` | SIGTERM か SIGHUP で止まるとき。`abandoned` は、結果を待たずに打ち切った要求の数(7.9 節)。 |
   | `dropped` | `count`、`first_ts`、`last_ts` | ドロップが収まって書けるようになったとき、まとめて1行。`first_ts` と `last_ts` は落とした行の `ts` の範囲。 |
   | `resolve_failed` | `host`、`error`、`addr` | 引き直しに失敗するたびに書く。起動のときの最初の失敗でも、`start` の後に書く(`errno` が測定の行にしか残らないことにならないように)。`error` の `reason` は `resolve`。`addr` は使い続けているアドレスで、一度も引けていなければ書かない。 |
   | `addr_changed` | `host`、`old`、`new` | 引き直したアドレスが変わったとき。初めて引けたときは `old` を省く。 |
@@ -711,8 +714,8 @@ targets:
   - Koitohan では、設定ファイルを root のうちに tmpfs へ写してから降格する(9.1 節)。降格した Detchi は元のファイルを読めず、写しは古いままなので、再読み込みには Koitohan の側で写し直す仕組みが要る。Koitohan では `docker compose restart` が自然。
   - 再起動の間の空白は、`stop` と `start` の行(6.1 節)で Detchi が止まっていたと分かる。BEAM の起動は数秒なので、60 秒間隔なら欠けても1回分。
   - 再読み込みは重い。機器と測定の増減と変更(間隔を変えたときの位相。7.5 節)、`data_dir` や `compression` の変更、`snmpm` への登録し直し(v3 は鍵の作り直し)、読み直した設定が誤っていたときの別の経路(起動のときのように止まるわけにいかない)を抱える。
-- SIGHUP は受け付けない。再読み込みと誤解されないように、文書に「再起動してください」と書く。
-- SIGTERM では正常に止まる。`stop` の行を書き、ファイルを閉じてから終わる。`docker stop` の猶予(既定 10 秒)に収まるように、応答を待っている要求は待たずに打ち切り、その結果の行は書かない。
+- SIGHUP では読み直さない。再読み込みと誤解されないように、文書に「再起動してください」と書く。
+- SIGTERM では正常に止まる。SIGHUP でも同じように止まる。`stop` の行を書き、ファイルを閉じてから終わる。`docker stop` の猶予(既定 10 秒)に収まるように、応答を待っている要求は待たずに打ち切り、その結果の行は書かない。
 - **設定を確かめるだけのコマンド**を用意する(例:`detchi check-config`)。`restart: unless-stopped`(9.1 節)の下では、誤った設定で再起動すると起動と停止を繰り返し、その間は何も測れない。再起動の前に確かめられるようにする。エラーの出し方は 7.1 節と同じ(資格情報を出さない)。
   - 読むのは設定ファイルだけ。`data_dir` があるか、書けるかは見ない。ホスト名も引かない(4.1 節と同じく、引き直しで変わるため)。
   - 誤りは標準エラー出力に出し、最後に `<ファイル>: N errors` の行を出す。終了コードは 1。

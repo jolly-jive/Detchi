@@ -47,7 +47,7 @@ MIX_ENV=prod mix escript.build   # ./detchi ができる
 
 | 終了コード | |
 | --- | --- |
-| 0 | 成功。`detchi run` では、SIGTERM で止まったとき。 |
+| 0 | 成功。`detchi run` では、SIGTERM か SIGHUP で止まったとき。 |
 | 1 | 誤り。設定に誤りがある、`detchi run` が起動できなかった、など。 |
 | 2 | 使い方の誤り(知らないコマンドや選択肢)。 |
 
@@ -66,13 +66,15 @@ MIX_ENV=prod mix escript.build   # ./detchi ができる
 
 ## 停止
 
-Detchi は **SIGTERM** で止めてください(`kill`、`docker stop`、`systemctl stop`)。SIGTERM を受けると、Detchi は次のことをします。
+Detchi は **SIGTERM**(`kill`、`docker stop`、`systemctl stop`)か SIGHUP で止めてください。どちらを受けても、Detchi は次のことをします。
 
 - 応答を待っている要求は待たずに打ち切り、その行は書きません。`docker stop` の 10 秒に収まるようにするためです。
 - 各機器のファイルに `stop` の行を書きます。打ち切った要求の数が `abandoned` に入ります。
 - ファイルを閉じて、終了コード 0 で終わります。
 
-ほかのシグナルでは、**`stop` の行を書かずに**その場で止まります。SIGINT(端末での Ctrl-C。終了コード 130)と SIGHUP(129)です。記録の上では、Detchi が落ちたのと同じに見えます。SIGHUP で設定を読み直すことはありません。
+SIGHUP で設定を読み直すことはありません。SIGTERM と同じく、Detchi を止めます。
+
+SIGINT(端末での Ctrl-C)では、**`stop` の行を書かずに**その場で止まります。終了コードは 130 です。記録の上では、Detchi が落ちたのと同じに見えます。Erlang の VM は、SIGINT を Detchi に扱わせません。
 
 ## 設定の変更と更新
 
@@ -123,7 +125,7 @@ ls -lt --time-style=full-iso /var/lib/detchi/core1 | head -3
 | 場所 | 書くもの |
 | --- | --- |
 | `data_dir` | 記録。umask によらず、ディレクトリは 0755、ファイルは 0644 で作ります。ほかのユーザーが読んでダウンロードできるようにするためです。 |
-| 一時ディレクトリ | SNMP のマネージャーのファイル(数 KB)。SIGTERM で止まるときに消します。ほかのシグナルで止まると、ディレクトリが残ります。 |
+| 一時ディレクトリ | SNMP のマネージャーのファイル(数 KB)。SIGTERM か SIGHUP で止まるときに消します。ほかのシグナル(SIGINT など)で止まると、ディレクトリが残ります。 |
 | 標準出力 | ログ。 |
 | 標準エラー出力 | `detchi run` を起動のときに止めた誤りと、誤りがあるときの `detchi check-config` の出力。 |
 

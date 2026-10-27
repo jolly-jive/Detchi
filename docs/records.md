@@ -146,7 +146,7 @@ Examples:
 | --- | --- | --- |
 | `start` | `version`, `config_hash`, `addr` | Detchi started. |
 | `file_opened` | `version`, `config_hash`, `addr` | A new file was opened at the change of the date (not at startup, where `start` is written). |
-| `stop` | `abandoned` | Detchi stopped on SIGTERM. `abandoned` is the number of requests whose results were not waited for. |
+| `stop` | `abandoned` | Detchi stopped on SIGTERM or SIGHUP. `abandoned` is the number of requests whose results were not waited for. |
 | `dropped` | `count`, `first_ts`, `last_ts` | Lines could not be written (the disk was full, for example), and now can. `count` lines with `ts` from `first_ts` to `last_ts` are missing. |
 | `resolve_failed` | `host`, `error`, `addr` | Looking up the host name failed. `addr` is the address still in use; it is left out when the name has never been looked up. |
 | `addr_changed` | `host`, `old`, `new` | The address of the host name changed. `old` is left out the first time a name is looked up. |

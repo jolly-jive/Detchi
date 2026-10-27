@@ -47,7 +47,7 @@ The config file is `$DETCHI_CONFIG`, or `/etc/detchi/detchi.yml`.
 
 | Exit status | |
 | --- | --- |
-| 0 | Success. For `detchi run`, it was stopped by SIGTERM. |
+| 0 | Success. For `detchi run`, it was stopped by SIGTERM or SIGHUP. |
 | 1 | An error: the config has errors, or `detchi run` could not start. |
 | 2 | Wrong usage (an unknown command or option). |
 
@@ -66,13 +66,15 @@ A host name that cannot be looked up at startup does not stop Detchi (see [Confi
 
 ## Stopping
 
-Stop Detchi with **SIGTERM** (`kill`, `docker stop`, `systemctl stop`). It then:
+Stop Detchi with **SIGTERM** (`kill`, `docker stop`, `systemctl stop`) or SIGHUP. It then:
 
 - stops waiting for the answers of requests in flight, without writing their lines, so that it stops within the 10 seconds of `docker stop`,
 - writes a `stop` line to the file of each target, with the count of the requests it stopped waiting for (`abandoned`),
 - closes the files, and exits with 0.
 
-Other signals stop Detchi at once, **without a `stop` line**: SIGINT (Ctrl-C in a terminal, exit status 130) and SIGHUP (129). The records then look as if Detchi had crashed. SIGHUP does not reload the config.
+SIGHUP does not reload the config; it stops Detchi, as SIGTERM does.
+
+SIGINT (Ctrl-C in a terminal) stops Detchi at once, **without a `stop` line**, with exit status 130. The records then look as if Detchi had crashed. The Erlang VM does not let Detchi handle SIGINT.
 
 ## Changing the config, and upgrading
 
@@ -123,7 +125,7 @@ Just after midnight, the file of the previous day can be newer than the one of t
 | Where | What |
 | --- | --- |
 | `data_dir` | The records. Directories are 0755 and files 0644 whatever the umask is, so that other users can read and download them. |
-| The temporary directory | The files of the SNMP manager, a few KB, removed at a stop by SIGTERM. A stop by another signal leaves the directory behind. |
+| The temporary directory | The files of the SNMP manager, a few KB, removed at a stop by SIGTERM or SIGHUP. A stop by another signal (SIGINT, for example) leaves the directory behind. |
 | stdout | The log. |
 | stderr | Errors that stop `detchi run` at startup, and the output of `detchi check-config` when there are errors. |
 

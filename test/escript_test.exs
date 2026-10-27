@@ -28,20 +28,22 @@ defmodule Detchi.EscriptTest do
     assert {"Usage: detchi <command>" <> _, 2} = detchi(["bogus"], @sample)
   end
 
-  test "run keeps running and exits with 0 on SIGTERM" do
-    port =
-      Port.open({:spawn_executable, @escript}, [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        args: ["run"],
-        env: [{~c"DETCHI_CONFIG", String.to_charlist(@sample)}]
-      ])
+  for signal <- ["TERM", "HUP"] do
+    test "run keeps running and exits with 0 on SIG#{signal}" do
+      port =
+        Port.open({:spawn_executable, @escript}, [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          args: ["run"],
+          env: [{~c"DETCHI_CONFIG", String.to_charlist(@sample)}]
+        ])
 
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
-    refute_receive {^port, {:exit_status, _}}, 2_000
+      {:os_pid, os_pid} = Port.info(port, :os_pid)
+      refute_receive {^port, {:exit_status, _}}, 2_000
 
-    {_, 0} = System.cmd("kill", ["-TERM", Integer.to_string(os_pid)])
-    assert_receive {^port, {:exit_status, 0}}, 10_000
+      {_, 0} = System.cmd("kill", ["-#{unquote(signal)}", Integer.to_string(os_pid)])
+      assert_receive {^port, {:exit_status, 0}}, 10_000
+    end
   end
 end

@@ -4,7 +4,8 @@ defmodule Detchi.CLI.Run do
 
   SIGTERM is left to OTP's default handling, which calls `init:stop/0`:
   the application is stopped, its children's `terminate/2` run, and the
-  VM exits with 0 (docs/basic-design.md, 3).
+  VM exits with 0 (docs/basic-design.md, 3). SIGHUP does the same (see
+  `Detchi.Signals`).
 
   The application and `snmp`, which it needs, are started as permanent:
   if either stops, so does the VM, to be restarted from outside, rather
@@ -17,7 +18,7 @@ defmodule Detchi.CLI.Run do
 
   require Logger
 
-  alias Detchi.{CLI, Config, Icmp, Snmp}
+  alias Detchi.{CLI, Config, Icmp, Signals, Snmp}
   alias Detchi.Config.Issue
 
   @spec run() :: 1 | no_return()
@@ -32,6 +33,7 @@ defmodule Detchi.CLI.Run do
              {:ok, snmp_dir} <- Snmp.configure(System.tmp_dir!()) do
           Application.put_env(:detchi, :config, config)
           Application.put_env(:detchi, :snmp_dir, snmp_dir)
+          Signals.install()
           {:ok, _} = Application.ensure_all_started(:detchi, :permanent)
           Process.sleep(:infinity)
         else

@@ -269,7 +269,7 @@ targets:
 
 ## Changing the config
 
-Restart Detchi after changing the config (restart the process or the container). Detchi does not reload the file; SIGHUP does not reload it either. Run `detchi check-config` before restarting: with an error in the file, Detchi does not start, and a container with `restart: unless-stopped` keeps restarting without measuring.
+Restart Detchi after changing the config (restart the process or the container). Detchi does not reload the file; SIGHUP does not reload it either, but stops Detchi. Run `detchi check-config` before restarting: with an error in the file, Detchi does not start, and a container with `restart: unless-stopped` keeps restarting without measuring.
 
 On a restart, the `stop` and `start` lines in the records show the gap. Each `start` line holds the config fingerprint of its target (`config_hash`), so changes of the config can be found in the records.
 

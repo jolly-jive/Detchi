@@ -146,7 +146,7 @@ Detchi は、1回の測定を JSON の1行として、機器ごと、日ごと�
 | --- | --- | --- |
 | `start` | `version`、`config_hash`、`addr` | Detchi が起動したとき。 |
 | `file_opened` | `version`、`config_hash`、`addr` | 日付が替わって新しいファイルを開いたとき(起動のときは `start` を書くので、書きません)。 |
-| `stop` | `abandoned` | SIGTERM で止まるとき。`abandoned` は、結果を待たずに打ち切った要求の数。 |
+| `stop` | `abandoned` | SIGTERM か SIGHUP で止まるとき。`abandoned` は、結果を待たずに打ち切った要求の数。 |
 | `dropped` | `count`、`first_ts`、`last_ts` | 行を書けなかった(ディスクが一杯など)のが、書けるようになったとき。`ts` が `first_ts` から `last_ts` までの `count` 行が欠けています。 |
 | `resolve_failed` | `host`、`error`、`addr` | ホスト名を引けなかったとき。`addr` は使い続けているアドレスで、一度も引けていなければ書きません。 |
 | `addr_changed` | `host`、`old`、`new` | ホスト名のアドレスが変わったとき。初めて引けたときは `old` を書きません。 |
