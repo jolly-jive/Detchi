@@ -70,6 +70,7 @@ targets:
 
 - [設定](docs/configuration.ja.md):設定ファイルのすべてのキー、既定値、検査の内容。
 - [記録](docs/records.ja.md):記録のファイルと行の形、結果の意味、読み方。
+- [運用](docs/operation.ja.md):ビルド、起動と停止、ログ、コンテナ、クラッシュダンプ。
 - [基本設計書](docs/basic-design.md)(日本語だけ):設計の背景、決まったこと、未決定事項。
 
 ## Koitohan
