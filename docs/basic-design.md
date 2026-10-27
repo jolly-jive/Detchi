@@ -64,7 +64,8 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
     - 既定では作業ディレクトリに書くが、`read_only: true`(9.1 節)の下では書けない。`/tmp` に向けても、tmpfs はコンテナが止まると消えるので、起動し直した後には残らない見込み。大きさも数 MB あり(spike で 3〜4MB)、tmpfs は RAM を使う。
     - 止まった理由は、止まる前に標準出力のログに出る(`Kernel pid terminated ...` など)ので、ダンプがなくても分かる。
     - 調べるためにダンプが要るときは、利用者が `ERL_CRASH_DUMP` と `ERL_CRASH_DUMP_SECONDS` を付けて動かす。中に資格情報が入ることを、利用者向けの文書に書く。
-    - 既定を escript の側で決める方法(`mix.exs` の `emu_args:` に `-env ERL_CRASH_DUMP_SECONDS 0` と書く、など)と、外から渡した環境変数とどちらが勝つかは、実装のときに確かめる。
+    - 既定は、escript の `main/1` の始めに、`ERL_CRASH_DUMP_SECONDS` がなければ `0` を入れて決める(`System.put_env/2`)。VM はダンプを書くときにこの変数を読むので、起動した後に入れても効く。利用者が外から渡した値はそのまま残る。
+      - `mix.exs` の `emu_args:` に `-env ERL_CRASH_DUMP_SECONDS 0` と書く案は採らなかった。`-env` は外から渡した値より勝ち、利用者がダンプを書かせられなくなる(2026-10-27 に確かめた)。
 
 ### 3.1 プロセスの構成(案)
 
@@ -287,6 +288,18 @@ NexPinger(`lib/nexpinger/prober.ex`)は `:gen_tcp.connect/4` でつなぎ、つ�
   - 標準の仕組みとして、RFC 2863 の `ifCounterDiscontinuityTime` もある。
 - `snmpm` の使い方(2026-10-24 に、手元に立てた OTP の `snmpa` を相手に確かめた)
   - マネージャーは、設定のファイル(`manager.conf` など)と、書き込める `db_dir` を要る。`detchi run` の起動のときに、一時ディレクトリ(`System.tmp_dir!/0`。`TMPDIR` か `/tmp`)へ書き出してから `snmp` を起動する(9.1 節)。マネージャーのポートは 0(OS に選ばせる)にする。
+    - 書き出す先は `<一時ディレクトリ>/detchi-<OS の pid>/`。起動のたびに作り直し、止まるとき(`Application.stop/1`)に消す。同じホストで Detchi を2つ動かしてもぶつからない。書けなければ、理由を標準エラー出力に出して、終了コード 1 で止まる。
+  - **マネージャーは IPv4 と IPv6 の両方で待ち受ける**(`manager.conf` の `transports`)。`address` で1つだけ書くと IPv4 だけになり、IPv6 の機器には送れない(`snmpm_net_if` が `Can not find transport` をログに出し、`timeout` になる)。機器を登録するときも、アドレスの族に合わせて `tdomain`(`transportDomainUdpIpv4` か `transportDomainUdpIpv6`)を渡す。渡さないと IPv6 のアドレスは `bad_address` で断られる(2026-10-27 に確かめた)。
+    - IPv6 は、起動のときに UDP のソケットを `[::]:0` に bind できたときだけ待ち受ける。IPv6 のないホストでも `snmp` が起動できるように。待ち受けていない族の機器の行は `internal` にする(`snmpm` に送らせると、ログを出して `timeout` になり、機器が応答しないのと区別できないため)。
+  - **SNMP の行の `addr` と `port` は、`sync_get2` の直前に `snmpm:agent_info/2`(`taddress`)で読む。** 表のアドレス(3.1 節)は、測るかどうかの判断にだけ使う。Resolver は `snmpm` に登録してから表に入れるので、その間に測ると、表の古いアドレスを書いて新しいアドレスへ送ることになるため。
+  - `sync_get2` の結果の振り分け
+    - `noError` は `ok`。varbinds を書く。
+    - `errorStatus` が 0 でなければ `error`(`reason` は `snmp`)。`rtt_us` は付け、varbinds は書かない(6.1 節)。
+    - `{timeout, _}` は `timeout`。
+    - ほかの誤り(`not_found`、`send_failed`、`snmpm` のプロセスがない、など)と、待ち受けていない族は `internal`。理由はログにだけ出し、`snmpm` の項は種類の名前(`not_found`、`send_failed, tooBig` など)だけを書く。項には機器の設定(community)が入りうるので、`inspect` しない。
+    - SNMP の行には、`snmpm` の結果がなくても(`timeout`、`internal`)、`port` と `snmp` の `version` と `op` を書く。UDP の行にいつも `udp.service` を書くのと同じ。
+  - community がログに出ないことは、テストで確かめる(機器の登録、登録し直し、成功、`internal` の経路で、Logger の出力を拾って探す)。
+  - 手元のエージェントを相手に `detchi run` を動かし、IPv4 と IPv6(`::1`)の両方で記録されることを確かめた(2026-10-27)。IPv6 の最初の要求だけ RTT が 13.9ms で、あとは 0.7ms 台だった。
   - マネージャーの最大の大きさ(`max_message_size`)は 65535 にする。要求がこれを超えると、マネージャーは送る前に断る(`send_failed`)。応答の大きさの判断は、エージェントに任せる(超えれば `tooBig` が返る)。
   - 機器は `snmpm:register_agent/3` で登録し、`snmpm:sync_get2/4` で取る。応答は `{varbind, OID, 型, 値, 番号}` の並びで、型は `'OCTET STRING'`、`'OBJECT IDENTIFIER'`、`'INTEGER'` などの atom、例外は型が `'NULL'` で値が `noSuchObject` などの形。記録の型の名前(6.1 節)への対応表を実装に持つ。OctetString の値は charlist で返る。
   - タイムアウトの後に届いた応答は、user のモジュールの `handle_pdu/4` に渡る。捨てる。
