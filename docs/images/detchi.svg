@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Detchi</title>
+  <rect width="512" height="512" rx="112" fill="#DCE7EE"/>
+  <g transform="translate(0,18)">
+  <ellipse cx="256" cy="440" rx="96" ry="12" fill="#000" opacity="0.07"/>
+<rect x="146" y="214" width="220" height="138" rx="42" fill="#3F9A52"/>
+<rect x="224" y="372" width="26" height="50" fill="#B9BEC4"/>
+<rect x="262" y="372" width="26" height="50" fill="#B9BEC4"/>
+<rect x="214" y="420" width="42" height="16" rx="5" fill="#6E5236"/>
+<rect x="256" y="420" width="42" height="16" rx="5" fill="#6E5236"/>
+<path d="M208,256 L304,256 C326,266 344,286 348,322 C336,330 324,330 316,324 L316,380 L196,380 L196,324 C188,330 176,330 164,322 C168,286 186,266 208,256 Z" fill="#3E5A7A"/>
+<rect x="206" y="314" width="100" height="74" rx="6" fill="#1C2B47"/>
+<rect x="196" y="310" width="120" height="8" fill="#EDE6D6"/>
+<g transform="translate(256,352) scale(0.2793)" fill="#fff">
+      <circle r="88" fill="none" stroke="#fff" stroke-width="14"/><path d="M0,-6 C-8,-16 -26,-24 -26,-40 C-26,-53 -10,-56 0,-45 C10,-56 26,-53 26,-40 C26,-24 8,-16 0,-6 Z" transform="rotate(0)"/><path d="M0,-4 L-5,-14 L-3.5,-56 L0,-66 L3.5,-56 L5,-14 Z" transform="rotate(180)"/><path d="M0,-6 C-8,-16 -26,-24 -26,-40 C-26,-53 -10,-56 0,-45 C10,-56 26,-53 26,-40 C26,-24 8,-16 0,-6 Z" transform="rotate(120)"/><path d="M0,-4 L-5,-14 L-3.5,-56 L0,-66 L3.5,-56 L5,-14 Z" transform="rotate(300)"/><path d="M0,-6 C-8,-16 -26,-24 -26,-40 C-26,-53 -10,-56 0,-45 C10,-56 26,-53 26,-40 C26,-24 8,-16 0,-6 Z" transform="rotate(240)"/><path d="M0,-4 L-5,-14 L-3.5,-56 L0,-66 L3.5,-56 L5,-14 Z" transform="rotate(420)"/></g>
+<path d="M176,262 C200,272 226,280 248,284" fill="none" stroke="#3F9A52" stroke-width="24" stroke-linecap="round"/>
+<path d="M336,262 C312,272 286,280 264,284" fill="none" stroke="#3F9A52" stroke-width="24" stroke-linecap="round"/>
+<path d="M248,286 L222,312 L238,316 L254,296 Z M264,286 L290,312 L274,316 L258,296 Z" fill="#3F9A52"/>
+<ellipse cx="256" cy="286" rx="19" ry="14" fill="#3F9A52"/>
+<ellipse cx="256" cy="182" rx="98" ry="90" fill="#FFE2CC"/>
+<path d="M162,168 C156,196 158,220 166,236 C174,214 184,194 196,182 Z" fill="#33262B"/>
+<path d="M350,168 C356,196 354,220 346,236 C338,214 328,194 316,182 Z" fill="#33262B"/>
+<path d="M152,176 C134,90 200,62 258,62 C322,62 384,90 360,176 Z" fill="#9A7752"/>
+<path d="M170,172 C214,150 298,150 342,172 C334,194 178,194 170,172 Z" fill="#6E5236"/>
+<g fill="#33262B"><ellipse cx="218" cy="204" rx="16" ry="20"/><ellipse cx="294" cy="204" rx="16" ry="20"/></g>
+<g fill="#fff"><circle cx="222.8" cy="196.0" r="5.5"/><circle cx="298.8" cy="196.0" r="5.5"/></g>
+<g fill="#F39A9A" opacity="0.65"><ellipse cx="198" cy="232.0" rx="16" ry="9"/><ellipse cx="314" cy="232.0" rx="16" ry="9"/></g>
+<g transform="translate(342,322) rotate(12) scale(1.5)"><rect x="-5" y="-60" width="10" height="84" rx="3" fill="#C99A5A"/>
+      <rect x="-5.5" y="-64" width="11" height="8" rx="2" fill="#5A3A2A"/>
+      <rect x="-6" y="24" width="12" height="7" fill="#5A3A2A"/>
+      <path d="M-6,31 C-6,44 -2,54 0,60 C2,54 6,44 6,31 Z" fill="#26201F"/></g><circle cx="342" cy="326" r="13" fill="#FFE2CC"/>
+  </g>
+</svg>

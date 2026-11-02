@@ -1,3 +1,5 @@
+<img src="docs/images/detchi.svg" alt="Detchi icon" width="160">
+
 # Detchi
 
 English | [日本語](README.ja.md)
