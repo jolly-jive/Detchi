@@ -6,7 +6,7 @@ A service that only collects and records network metrics: the RTT over ICMP / TC
 
 Detchi does not alert, chart, or compute statistics. Download the records and do that elsewhere.
 
-Written in Elixir/OTP. Made to be built into [Koitohan](#koitohan) (a small management server for network devices on a Raspberry Pi), but it does not depend on Koitohan.
+Written in Elixir/OTP. Made to be built into [Koitohan](https://github.com/jolly-jive/Koitohan) (a small management server for network devices on a Raspberry Pi), but it does not depend on Koitohan.
 
 *Detchi is in development and has no release yet.*
 
@@ -76,7 +76,7 @@ To change the config, restart Detchi. SIGHUP does not reload it.
 
 ## Koitohan
 
-Koitohan is a small management server for network devices, by the same author, not public yet. Detchi is a general service; what is specific to Koitohan is added on the side of Koitohan.
+[Koitohan](https://github.com/jolly-jive/Koitohan) is a small management server for network devices, by the same author. Detchi is a general service; what is specific to Koitohan is added on the side of Koitohan.
 
 ## License
 

@@ -4,7 +4,7 @@
 
 ネットワークのメトリックスを**収集して記録するだけ**のサービス。Linux の上で常に動き続け、ネットワーク機器の RTT と SNMP の値を測って、そのまま記録に残す。
 
-Koitohan(Raspberry Pi で動く、ネットワーク機器向けの小さな管理サーバ)に組み込むことを想定して作るが、Koitohan には依存しない汎用のものにする(9 節)。
+[Koitohan](https://github.com/jolly-jive/Koitohan)(Raspberry Pi で動く、ネットワーク機器向けの小さな管理サーバ)に組み込むことを想定して作るが、Koitohan には依存しない汎用のものにする(9 節)。
 
 ### 1.1 名称
 
@@ -861,7 +861,7 @@ Koitohan は、Detchi がリリースされたら組み込む予定で、組み�
 
 ### 9.7 Koitohan の側の参照先
 
-Koitohan の `docs/basic-design.md` のうち、Detchi に関わる節。
+[Koitohan](https://github.com/jolly-jive/Koitohan) の `docs/basic-design.md` のうち、Detchi に関わる節。
 
 - 3.6 節:chrony。任意のサービスの前例。
 - 7.8 節:NexPinger を利用者作業用コンテナに載せる案(保留)。

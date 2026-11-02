@@ -6,7 +6,7 @@
 
 警告、チャート、統計の計算はしません。記録をダウンロードして、別の仕組みで行ってください。
 
-Elixir/OTP で書いています。[Koitohan](#koitohan)(Raspberry Pi で動く、ネットワーク機器向けの小さな管理サーバ)に組み込むために作っていますが、Koitohan には依存しません。
+Elixir/OTP で書いています。[Koitohan](https://github.com/jolly-jive/Koitohan)(Raspberry Pi で動く、ネットワーク機器向けの小さな管理サーバ)に組み込むために作っていますが、Koitohan には依存しません。
 
 *Detchi は開発中で、まだリリースはありません。*
 
@@ -76,7 +76,7 @@ targets:
 
 ## Koitohan
 
-Koitohan は、同じ作者のネットワーク機器向けの小さな管理サーバです(まだ公開していません)。Detchi は汎用のサービスとして作り、Koitohan に固有のことは Koitohan の側で足します。
+[Koitohan](https://github.com/jolly-jive/Koitohan) は、同じ作者のネットワーク機器向けの小さな管理サーバです。Detchi は汎用のサービスとして作り、Koitohan に固有のことは Koitohan の側で足します。
 
 ## ライセンス
 

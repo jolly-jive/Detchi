@@ -19,7 +19,7 @@ Detchi は、ネットワークのメトリックス(ICMP / TCP / UDP の RTT �
 
 ## 参照
 
-- Koitohan のリポジトリ
+- Koitohan:https://github.com/jolly-jive/Koitohan
   - `CLAUDE.md`:構成と、守っている方針の詳細。
   - `docs/basic-design.md`:Detchi に関わる節は、Detchi の `docs/basic-design.md` 9.7 節にまとめてある。
 - NexPinger:https://github.com/jolly-jive/nexpinger
