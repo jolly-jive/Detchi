@@ -1,6 +1,4 @@
-<img src="docs/images/detchi.svg" alt="Detchi icon" width="160">
-
-# Detchi
+# <img src="docs/images/detchi.svg" alt="Detchi icon" width="48" align="absmiddle"> Detchi
 
 English | [日本語](README.ja.md)
 
