@@ -1,8 +1,10 @@
 # Build the container image for amd64 and arm64, and push it to Docker Hub,
 # when a release tag (v0.1.0 and so on) is pushed.
 #
-# Needs the repository secrets DOCKERHUB_USER (the Docker Hub user) and
-# DOCKERHUB_TOKEN (an access token of that user, Read & Write).
+# Needs the repository variable DOCKERHUB_USERNAME (the Docker Hub user) and
+# the repository secret DOCKERHUB_TOKEN (an access token of that user, Read &
+# Write). The user name is a variable, not a secret: it is not secret, and
+# as a secret it would be masked in the log, image names included.
 #
 # Actions are pinned to commit SHAs, since this workflow holds the token.
 
@@ -64,7 +66,7 @@ jobs:
 
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
-          username: ${{ secrets.DOCKERHUB_USER }}
+          username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
