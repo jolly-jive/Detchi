@@ -33,6 +33,8 @@ MIX_ENV=prod mix escript.build   # writes ./detchi
 - Running needs Erlang/OTP 28 or later. The escript does not include ERTS, and its first line is `#! /usr/bin/env escript`, so `escript` must be on `PATH`.
 - Detchi runs on Linux only.
 
+To build a container image instead, see [Running in a container](#running-in-a-container).
+
 ## Commands
 
 | Command | |
@@ -151,18 +153,87 @@ Detchi needs no privileges: no root, no capabilities, and no setuid. The config 
 
 ## Running in a container
 
-Detchi works as a container with these settings:
+Each release is published on Docker Hub as [`cayenneryo/detchi`](https://hub.docker.com/r/cayenneryo/detchi), for amd64 and arm64 (a Raspberry Pi, for example).
 
-- **An image with Erlang/OTP 28 or later**, such as `erlang:28-alpine`. Build the escript in an earlier stage of a multi-stage build, and copy it in.
-- **`TZ`**, for the dates of the files and the offsets of `ts`. Alpine needs the `tzdata` package.
-- **A volume at `data_dir`** for the records.
+| Tag | |
+| --- | --- |
+| `0.1.0` | That release. |
+| `0.1` | The latest release of 0.1. |
+| `latest` | The latest release. |
+
+```sh
+docker pull cayenneryo/detchi:0.1.0
+```
+
+Pin a version (`0.1.0`) rather than `latest`, and upgrade as in [Changing the config, and upgrading](#changing-the-config-and-upgrading): check the config with the new image before switching.
+
+The image is built from the `Dockerfile` of the repository. To build it yourself:
+
+```sh
+git clone https://github.com/jolly-jive/detchi.git
+cd detchi
+git checkout <tag>
+docker build -t detchi .
+```
+
+The `Dockerfile` builds the escript in a first stage, and runs it on `erlang:28-alpine`. Both images are multi-arch, so it builds on amd64 and on arm64 alike.
+
+The image:
+
+- runs `detchi run` as the user `detchi` (uid 1000, gid 1000);
+- reads the config at `/etc/detchi/detchi.yml`, and writes to `/var/lib/detchi` (the default `data_dir`);
+- has `tzdata`, so `TZ` works;
+- takes the other commands as arguments: `docker run --rm cayenneryo/detchi:0.1.0 --version`.
+
+An example of Compose, with the config and the records in the directory of `compose.yaml`:
+
+```yaml
+services:
+  detchi:
+    image: cayenneryo/detchi:0.1.0   # or detchi, if built yourself
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Tokyo
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - ./detchi.yml:/etc/detchi/detchi.yml:ro
+      - ./data:/var/lib/detchi
+    healthcheck:
+      test: ["CMD", "detchi", "status", "-q"]
+      interval: 60s
+      timeout: 20s
+      start_period: 30s
+```
+
+```sh
+mkdir data                                    # before the first start; see below
+chmod 600 detchi.yml
+docker compose run --rm detchi check-config
+docker compose up -d
+docker compose logs -f
+```
+
+What the settings are for:
+
+- **`TZ`**: the dates of the files and the offsets of `ts`.
+- **The volume at `data_dir`** holds the records. uid 1000 must be able to write to it. Create the directory before the first start: Docker creates a missing directory of a bind mount as root, and Detchi then cannot write (`dropping lines ... (eacces)` in the log).
+- **The config file** must be readable by uid 1000. It holds the SNMP credentials, so make it 0600, owned by uid 1000.
 - **`read_only: true`** works, with a tmpfs at `/tmp` (or `TMPDIR`) for the files of the SNMP manager.
-- **`security_opt: no-new-privileges:true`** works: Detchi needs no setuid and no file capabilities.
-- **A user other than root.** The default `net.ipv4.ping_group_range` of Docker allows ICMP sockets for every group.
+- **`security_opt: no-new-privileges:true`** and **`cap_drop: [ALL]`** work: Detchi needs no setuid and no capabilities.
+- **A user other than root.** The default `net.ipv4.ping_group_range` of Docker allows ICMP sockets for every group. To run as another uid, set `user:`; that uid must then read the config and write the records.
 - **`restart: unless-stopped`** brings Detchi back after a crash. Run `detchi check-config` before a restart: with an error in the config, the container keeps restarting without measuring.
+- **`healthcheck`**: `detchi status -q` exits with 0 when every target is being written to, and 1 otherwise (see [Checking that Detchi is working](#checking-that-detchi-is-working)). It takes about 0.5 seconds on a Raspberry Pi 5. The image has no `HEALTHCHECK` of its own; whether to use one is up to you.
 - `docker stop` sends SIGTERM, and Detchi stops within its 10 seconds.
 - The log is on stdout: `docker logs` or `docker compose logs`.
 - Detchi only sends requests out. It opens no port for others to connect to; the SNMP manager receives the answers on a UDP port chosen by the OS.
+
+To use an image of your own, build the escript as in [Building](#building), and run it on an image with Erlang/OTP 28 or later. On Alpine, add the `tzdata` package.
 
 ## Crash dumps
 

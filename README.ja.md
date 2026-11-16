@@ -45,6 +45,14 @@ MIX_ENV=prod mix escript.build   # ./detchi ができる
 ./detchi status                  # 機器ごとに記録が書かれ続けているか確かめる
 ```
 
+コンテナで動かすこともできます。リリースは Docker Hub に `cayenneryo/detchi` として公開しています(amd64、arm64)。イメージを自分でビルドすることもできます。
+
+```sh
+docker build -t detchi .
+```
+
+Compose の例と要る設定は、[運用](docs/operation.ja.md#コンテナで動かす)にあります。
+
 設定ファイルは `$DETCHI_CONFIG`、なければ `/etc/detchi/detchi.yml` です。短い例:
 
 ```yaml

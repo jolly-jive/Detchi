@@ -33,6 +33,8 @@ MIX_ENV=prod mix escript.build   # ./detchi ができる
 - 動かすには Erlang/OTP 28 以上が要ります。escript は ERTS を含まず、先頭の行が `#! /usr/bin/env escript` なので、`escript` が `PATH` にあること。
 - Detchi が動くのは Linux だけです。
 
+コンテナのイメージをビルドするときは、[コンテナで動かす](#コンテナで動かす)を参照してください。
+
 ## コマンド
 
 | コマンド | |
@@ -151,18 +153,87 @@ Detchi に権限は要りません。root も、ケーパビリティも、setui
 
 ## コンテナで動かす
 
-Detchi は、次の設定のコンテナで動きます。
+リリースごとに、Docker Hub に [`cayenneryo/detchi`](https://hub.docker.com/r/cayenneryo/detchi) として公開しています。amd64 と arm64(Raspberry Pi など)の両方があります。
 
-- **Erlang/OTP 28 以上のイメージ**(`erlang:28-alpine` など)。escript は、多段のビルドの前の段でビルドして写します。
-- **`TZ`**。ファイルの日付と `ts` のオフセットに使います。Alpine には `tzdata` のパッケージが要ります。
-- **`data_dir` のボリューム**。記録の置き場所です。
+| タグ | |
+| --- | --- |
+| `0.1.0` | そのリリース。 |
+| `0.1` | 0.1 の最新のリリース。 |
+| `latest` | 最新のリリース。 |
+
+```sh
+docker pull cayenneryo/detchi:0.1.0
+```
+
+`latest` ではなく版(`0.1.0`)で固定し、[設定の変更と更新](#設定の変更と更新)のとおりに更新してください。切り替える前に、新しいイメージで設定を検査します。
+
+イメージは、リポジトリの `Dockerfile` からビルドしています。自分でビルドするときは:
+
+```sh
+git clone https://github.com/jolly-jive/detchi.git
+cd detchi
+git checkout <タグ>
+docker build -t detchi .
+```
+
+`Dockerfile` は、前の段で escript をビルドし、`erlang:28-alpine` の上で動かします。どちらのイメージも複数のアーキテクチャに対応しているので、amd64 でも arm64 でも同じようにビルドできます。
+
+このイメージは:
+
+- ユーザー `detchi`(uid 1000、gid 1000)で `detchi run` を動かします。
+- 設定を `/etc/detchi/detchi.yml` から読み、`/var/lib/detchi`(`data_dir` の既定)に書きます。
+- `tzdata` を含むので、`TZ` が効きます。
+- ほかのコマンドは引数で渡します(`docker run --rm cayenneryo/detchi:0.1.0 --version`)。
+
+Compose の例です。設定と記録は `compose.yaml` のディレクトリに置きます。
+
+```yaml
+services:
+  detchi:
+    image: cayenneryo/detchi:0.1.0   # 自分でビルドしたなら detchi
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Tokyo
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - ./detchi.yml:/etc/detchi/detchi.yml:ro
+      - ./data:/var/lib/detchi
+    healthcheck:
+      test: ["CMD", "detchi", "status", "-q"]
+      interval: 60s
+      timeout: 20s
+      start_period: 30s
+```
+
+```sh
+mkdir data                                    # 最初に起動する前に(下を参照)
+chmod 600 detchi.yml
+docker compose run --rm detchi check-config
+docker compose up -d
+docker compose logs -f
+```
+
+それぞれの設定の意味:
+
+- **`TZ`**。ファイルの日付と `ts` のオフセットに使います。
+- **`data_dir` のボリューム**。記録の置き場所で、uid 1000 が書ける必要があります。最初に起動する前にディレクトリを作ってください。バインドマウントのディレクトリがないと、Docker は root の持ち物として作るので、Detchi は書けません(ログに `dropping lines ... (eacces)` が出ます)。
+- **設定ファイル**は、uid 1000 が読める必要があります。SNMP の資格情報を含むので、uid 1000 の持ち物で 0600 にしてください。
 - **`read_only: true`** でも動きます。SNMP のマネージャーのファイルのために、`/tmp`(か `TMPDIR`)を tmpfs にしてください。
-- **`security_opt: no-new-privileges:true`** でも動きます。Detchi は setuid もファイルのケーパビリティも使いません。
-- **root 以外のユーザー**で動きます。Docker の既定の `net.ipv4.ping_group_range` は、どのグループにも ICMP のソケットを許しています。
+- **`security_opt: no-new-privileges:true`** と **`cap_drop: [ALL]`** でも動きます。Detchi は setuid もケーパビリティも使いません。
+- **root 以外のユーザー**で動きます。Docker の既定の `net.ipv4.ping_group_range` は、どのグループにも ICMP のソケットを許しています。ほかの uid で動かすときは `user:` を書きます。その uid が設定を読め、記録を書ける必要があります。
 - **`restart: unless-stopped`** なら、落ちても起動し直します。再起動の前に `detchi check-config` を動かしてください。設定に誤りがあると、コンテナは何も測らないまま起動し直しを繰り返します。
+- **`healthcheck`**。`detchi status -q` は、すべての機器が書かれ続けていれば終了コード 0、そうでなければ 1 で終わります([動いているかの確認](#動いているかの確認)を参照)。Raspberry Pi 5 で 0.5 秒ほどかかります。イメージ自体には `HEALTHCHECK` を入れていません。使うかは利用する側で決めてください。
 - `docker stop` は SIGTERM を送ります。Detchi はその 10 秒の間に止まります。
 - ログは標準出力にあります。`docker logs` や `docker compose logs` で見られます。
 - Detchi は要求を送り出すだけです。ほかから接続を受けるポートは開きません。SNMP のマネージャーは、OS が選んだ UDP のポートで応答を受けます。
+
+自分のイメージを使うときは、[ビルド](#ビルド)のとおりに escript をビルドし、Erlang/OTP 28 以上のイメージの上で動かしてください。Alpine なら `tzdata` のパッケージを足します。
 
 ## クラッシュダンプ
 

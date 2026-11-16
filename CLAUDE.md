@@ -15,6 +15,7 @@ Detchi は、ネットワークのメトリックス(ICMP / TCP / UDP の RTT �
 - 返事は日本語。コード、コミットメッセージ、プルリクエストの本文は英語。
 - 定型の git 操作(コミット、push、ブランチの作成と切り替え、マージ後の片付け)は、コマンドを示すだけにして、実行はユーザーが行う。
 - リポジトリの作成、プルリクエスト、Release はユーザーがウェブ画面で行う(このホストに `gh` CLI はない)。
+- `v*` のタグを push すると、GitHub Actions がイメージを Docker Hub(`cayenneryo/detchi`)に公開する(`docs/basic-design.md` 8 節)。タグは `mix.exs` の `version` に合わせる。取り消しにくいので、タグを打つ前に `mix test` と、`docker build` したイメージの動作を確かめる。
 - コミットの作者は Koitohan、NexPinger と同じく `Cayenne Ryo <7951074+jolly-jive@users.noreply.github.com>`。リポジトリごとに `git config user.name "Cayenne Ryo"` と `git config user.email 7951074+jolly-jive@users.noreply.github.com` を設定する(グローバルの設定は別の名前なので、そのままでは使わない)。
 
 ## 参照

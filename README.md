@@ -45,6 +45,14 @@ MIX_ENV=prod mix escript.build   # writes ./detchi
 ./detchi status                  # check that each target is being written to
 ```
 
+Detchi also runs in a container. Releases are on Docker Hub as `cayenneryo/detchi`, for amd64 and arm64; or build the image yourself:
+
+```sh
+docker build -t detchi .
+```
+
+An example of Compose, and the settings it needs, are in [Operation](docs/operation.md#running-in-a-container).
+
 The config file is `$DETCHI_CONFIG`, or `/etc/detchi/detchi.yml`. A short example:
 
 ```yaml

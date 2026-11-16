@@ -1,0 +1,5 @@
+# Only mix.exs, mix.lock and lib/ go into the image (see Dockerfile).
+*
+!mix.exs
+!mix.lock
+!lib/

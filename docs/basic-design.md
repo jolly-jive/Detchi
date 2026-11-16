@@ -63,7 +63,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
       - SIGHUP は、`os:set_signal(sighup, handle)` で `erl_signal_server` に渡し、足したハンドラー(`Detchi.Signals`)で `init:stop` を呼ぶ。SIGTERM と同じく、終了コード 0 で `stop` の行を書いて止まる。
       - SIGINT は同じようにできない。`os:set_signal/2` は `sigint` を受け付けず(`invalid signal name`)、SIGINT は ERTS のブレークハンドラーが扱う。escript は `+B`(既定の `+Bd`)で動くので、その場で止まる。`+Bi` なら無視、`+Bc` なら BREAK のメニューが出るだけで、どれも `init:stop` にはならない。端末で Ctrl-C を押すと `stop` の行が残らないことを、文書に書く。
     - 捕まえていない例外は終了コード 1、`System.halt/1` の値はそのまま終了コードになる。Erlang の分散と epmd は動かない。
-    - 起動の時間は、開発の PC で 0.44 秒(Raspberry Pi は未計測)。
+    - 起動の時間は、開発の PC で 0.44 秒。Raspberry Pi 5 のコンテナで、`docker compose exec` を含めて 0.47 秒(2026-11-16。`detchi status -q`)。
     - 実行には Erlang/OTP 28 以上が要る(escript は ERTS を含まない)。先頭の行は `#! /usr/bin/env escript` なので、`escript` が `PATH` にあること。
     - escript は `priv` を扱えないが、Detchi は `priv` を使わない。`config/runtime.exs` も使えないが、設定は YAML と環境変数なので要らない。
   - **`erl_crash.dump` は書かない**(`ERL_CRASH_DUMP_SECONDS=0`)。
@@ -749,8 +749,24 @@ targets:
 
 ## 8. 配布、文書、ライセンス
 
-- 配布の形は、当面**ソースのタグ**。利用する側(Koitohan など)の Dockerfile が、多段のビルドでタグから escript をビルドする(3 節)。
-  - 実行の段は、Erlang/OTP 28 以上のイメージ(例:`erlang:28-alpine`)の上で escript を動かす。escript は ERTS を含まないので、素の Alpine では動かない。
+- 配布の形は、**ソースのタグ**と、**Docker Hub のイメージ** `cayenneryo/detchi`(amd64 と arm64)。どちらも 2026-11-16 に決めた。
+  - イメージは、リリースのタグ(`v0.1.0` など)を push したときだけ、GitHub Actions(`.github/workflows/docker.yml`)がビルドして push する。`main` への push では出さない(未完成のものを公開しない)。
+  - イメージのタグは `0.1.0`、`0.1`、`latest`。`0` は付けない(1.0 より前は、0.x の間で互換を約束しないため)。プレリリース(`v0.2.0-rc.1`)には、それ自身のタグだけを付ける。
+  - git のタグが `mix.exs` の `version` と食い違えば、ワークフローは止まる。`detchi --version` と記録の `start` の行に出るのは `mix.exs` の版なので、イメージのタグと揃える。
+  - git のタグは `v` 付き(`v0.1.0`。Koitohan、NexPinger と同じ)、イメージのタグは `v` なし(`0.1.0`。Docker の慣例と `docker/metadata-action` の既定に合わせる)。
+  - Docker Hub の資格情報は、リポジトリの Secrets に置く。`DOCKERHUB_USER` がユーザー名、`DOCKERHUB_TOKEN` がそのユーザーのアクセストークン(読み書き)。トークンを扱うので、ワークフローのアクションはタグではなくコミットの SHA で固定する。
+  - arm64 のためにランナーで QEMU を使う。escript は BEAM のコードだけ(Detchi にも依存先にも NIF がない)で、アーキテクチャによらないので、ビルドの段は `FROM --platform=$BUILDPLATFORM` でランナーの上で1回だけ動かす。エミュレーションで動くのは、実行の段の `apk add` だけ。
+  - 依存に NIF を持つものを足すときは、この前提が崩れる。ビルドの段を `$BUILDPLATFORM` に固定するのをやめること。
+  - ワークフローではテストを動かさない。リリースの前に手元で動かす。ICMP の権限など、ランナーの環境にテストが合うかを確かめていないため。
+- リポジトリに **`Dockerfile`** を置く(2026-11-16 に決めた)。タグを取ってきて `docker build` すれば、そのまま動かせる。
+  - 当初は、利用する側(Koitohan など)の Dockerfile がタグから escript をビルドする想定だった。Raspberry Pi で単独で常時動かすことになり、そのたびに Dockerfile を書く手間をなくすため、Detchi の側に置くことにした。利用する側は、これを使っても、自分で書いてもよい。
+  - 多段のビルド。前の段(`elixir:1.19-otp-28-alpine`)で escript をビルドし、実行の段(`erlang:28-alpine`)へ写す。escript は ERTS を含まないので、素の Alpine では動かない。どちらのイメージも amd64 と arm64 に対応しているので、Raspberry Pi 5 の上でそのままビルドできる(2026-11-16 に、Raspberry Pi 5 でビルドと動作を確かめた。ビルドは土台のイメージがあれば約 20 秒、イメージは約 90MB)。
+  - 実行の段には `tzdata` を入れる(9.1 節)。
+  - ユーザー `detchi`(**uid 1000**、gid 1000)で動かす(9.1 節、9.2 節)。root で起動して降格する形(9.1 節)は Koitohan の流儀なので、必要なら Koitohan の側のイメージで足す。
+  - `/var/lib/detchi` を uid 1000 の持ち物で作っておく。名前付きのボリュームを当てたとき、その持ち主が引き継がれる。
+  - **`HEALTHCHECK` は入れない。** 入れるかは利用する側で判断する(9.5 節)。Compose の例には入れる。
+  - `.dockerignore` で、ビルドに要るもの(`mix.exs`、`mix.lock`、`lib/`)だけを渡す。`_build`、`deps`、手元でビルドした `detchi` が入らない。
+  - Compose の例は、利用者向けの文書(`docs/operation.md`)に置き、ファイルとしては置かない。設定と記録の置き場所は使う人ごとに違うため。
 - 文書
   - README と利用者向けの文書は、`<名前>.md`(英語)と `<名前>.ja.md`(日本語)の対にする(Koitohan と同じ)。
   - 本書(基本設計書)は日本語だけ(Koitohan の `docs/basic-design.md` と同じ)。
@@ -854,8 +870,8 @@ Koitohan は、Detchi がリリースされたら組み込む予定で、組み�
 
     - 判定できないときも 1 にするのは、Docker の `HEALTHCHECK` が 0 を healthy、1 を unhealthy とし、2 を予約済み(使わない)としているため。設定が誤っていれば Detchi は動いていないはずなので、意味も合う。
   - 何も書かない。`<data_dir>` がなくても作らない。
-  - BEAM をもう1つ起動するので、Raspberry Pi では1〜2秒かかる見込み(開発の PC で 0.44 秒。Raspberry Pi は未計測)。Koitohan のタイムアウト(要求1つに 20 秒)に収まる。
-  - 同じコマンドを Dockerfile の `HEALTHCHECK` にも使える。入れるかは、利用する側で判断する。
+  - BEAM をもう1つ起動するが、Raspberry Pi 5 でも 0.47 秒だった(3 節)。Koitohan のタイムアウト(要求1つに 20 秒)に十分に収まる。
+  - 同じコマンドを `HEALTHCHECK` にも使える。リポジトリの `Dockerfile` には入れず(8 節)、入れるかは利用する側で判断する。
 
 ### 9.6 テスト
 
@@ -894,7 +910,6 @@ Koitohan は、Detchi がリリースされたら組み込む予定で、組み�
   - ICMP、TCP、UDP のどれにも当てはまる。`reason` が `errno` の行にして、`status` を `error` か `unreachable` にする案がある。どの呼び出し(connect、send)で、すぐ返るのか再送の後に返るのかは、root のある環境で確かめる。
 - RTT の精度(3.1 節)。最初の版は BEAM の単調な時計で測るので、Raspberry Pi が重いときは、受け取ってから Attempt が動くまでの遅れが RTT に乗る。気になるなら、カーネルの受信時刻(`SO_TIMESTAMPNS` の制御メッセージ)を使う。OTP の `socket` で取れるか、送った時刻とどう比べるかは未確認。
 - プッシュ型の時刻の扱い(6.1 節。暫定の決め。実機で確かめて考え直す)。
-- 将来、配布をコンテナイメージにも広げるか(置き場所と CI が要る。Koitohan は GitHub Actions を Public 化まで保留している)。
 - SNMP のインデックスと実体の対応が変わることへの対処。
   - 長期間記録すると、設定や構成の変更で、インデックス(`ifIndex` など)が指すインターフェースが変わることがある。そうなると、同じ OID の値が途中から別のインターフェースのものになる。
   - 起こる場面の例
