@@ -8,7 +8,7 @@ Detchi does not alert, chart, or compute statistics. Download the records and do
 
 Written in Elixir/OTP. Made to be built into [Koitohan](https://github.com/jolly-jive/Koitohan) (a small management server for network devices on a Raspberry Pi), but it does not depend on Koitohan.
 
-*Detchi is in development and has no release yet.*
+*The latest release is [v0.1.0](https://github.com/jolly-jive/Detchi/releases/tag/v0.1.0).*
 
 ## The name
 
