@@ -8,7 +8,7 @@
 
 Elixir/OTP で書いています。[Koitohan](https://github.com/jolly-jive/Koitohan)(Raspberry Pi で動く、ネットワーク機器向けの小さな管理サーバ)に組み込むために作っていますが、Koitohan には依存しません。
 
-*最新のリリースは [v0.1.0](https://github.com/jolly-jive/Detchi/releases/tag/v0.1.0) です。*
+*最新のリリースは [v0.2.0](https://github.com/jolly-jive/Detchi/releases/tag/v0.2.0) です。*
 
 ## 名前
 

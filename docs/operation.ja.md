@@ -157,15 +157,15 @@ Detchi に権限は要りません。root も、ケーパビリティも、setui
 
 | タグ | |
 | --- | --- |
-| `0.1.0` | そのリリース。 |
-| `0.1` | 0.1 の最新のリリース。 |
+| `0.2.0` | そのリリース。 |
+| `0.2` | 0.2 の最新のリリース。 |
 | `latest` | 最新のリリース。 |
 
 ```sh
-docker pull cayenneryo/detchi:0.1.0
+docker pull cayenneryo/detchi:0.2.0
 ```
 
-`latest` ではなく版(`0.1.0`)で固定し、[設定の変更と更新](#設定の変更と更新)のとおりに更新してください。切り替える前に、新しいイメージで設定を検査します。
+`latest` ではなく版(`0.2.0`)で固定し、[設定の変更と更新](#設定の変更と更新)のとおりに更新してください。切り替える前に、新しいイメージで設定を検査します。
 
 イメージは、リポジトリの `Dockerfile` からビルドしています。自分でビルドするときは:
 
@@ -183,14 +183,14 @@ docker build -t detchi .
 - ユーザー `detchi`(uid 1000、gid 1000)で `detchi run` を動かします。
 - 設定を `/etc/detchi/detchi.yml` から読み、`/var/lib/detchi`(`data_dir` の既定)に書きます。
 - `tzdata` を含むので、`TZ` が効きます。
-- ほかのコマンドは引数で渡します(`docker run --rm cayenneryo/detchi:0.1.0 --version`)。
+- ほかのコマンドは引数で渡します(`docker run --rm cayenneryo/detchi:0.2.0 --version`)。
 
 Compose の例です。設定と記録は `compose.yaml` のディレクトリに置きます。
 
 ```yaml
 services:
   detchi:
-    image: cayenneryo/detchi:0.1.0   # 自分でビルドしたなら detchi
+    image: cayenneryo/detchi:0.2.0   # 自分でビルドしたなら detchi
     restart: unless-stopped
     environment:
       TZ: Asia/Tokyo
