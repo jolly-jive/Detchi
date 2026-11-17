@@ -30,7 +30,7 @@ defmodule Detchi.CLITest do
     test "--help and --version exit with 0" do
       assert {0, "Usage: detchi <command>" <> _, ""} = run(["--help"])
       assert {0, "Usage: detchi <command>" <> _, ""} = run(["-h"])
-      assert {0, "detchi 0.1.0\n", ""} = run(["--version"])
+      assert {0, "detchi 0.2.0\n", ""} = run(["--version"])
     end
 
     test "no command, an unknown command or extra arguments exit with 2" do

@@ -157,15 +157,15 @@ Each release is published on Docker Hub as [`cayenneryo/detchi`](https://hub.doc
 
 | Tag | |
 | --- | --- |
-| `0.1.0` | That release. |
-| `0.1` | The latest release of 0.1. |
+| `0.2.0` | That release. |
+| `0.2` | The latest release of 0.2. |
 | `latest` | The latest release. |
 
 ```sh
-docker pull cayenneryo/detchi:0.1.0
+docker pull cayenneryo/detchi:0.2.0
 ```
 
-Pin a version (`0.1.0`) rather than `latest`, and upgrade as in [Changing the config, and upgrading](#changing-the-config-and-upgrading): check the config with the new image before switching.
+Pin a version (`0.2.0`) rather than `latest`, and upgrade as in [Changing the config, and upgrading](#changing-the-config-and-upgrading): check the config with the new image before switching.
 
 The image is built from the `Dockerfile` of the repository. To build it yourself:
 
@@ -183,14 +183,14 @@ The image:
 - runs `detchi run` as the user `detchi` (uid 1000, gid 1000);
 - reads the config at `/etc/detchi/detchi.yml`, and writes to `/var/lib/detchi` (the default `data_dir`);
 - has `tzdata`, so `TZ` works;
-- takes the other commands as arguments: `docker run --rm cayenneryo/detchi:0.1.0 --version`.
+- takes the other commands as arguments: `docker run --rm cayenneryo/detchi:0.2.0 --version`.
 
 An example of Compose, with the config and the records in the directory of `compose.yaml`:
 
 ```yaml
 services:
   detchi:
-    image: cayenneryo/detchi:0.1.0   # or detchi, if built yourself
+    image: cayenneryo/detchi:0.2.0   # or detchi, if built yourself
     restart: unless-stopped
     environment:
       TZ: Asia/Tokyo
