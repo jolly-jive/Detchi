@@ -56,6 +56,7 @@ targets:
         interval: 300s
         oids:                # taken in one request
           - "1.3.6.1.2.1.1.3.0"           # sysUpTime.0
+          - "1.3.6.1.2.1.31.1.1.1.1.1"    # ifName.1
           - "1.3.6.1.2.1.31.1.1.1.6.1"    # ifHCInOctets.1
           - "1.3.6.1.2.1.31.1.1.1.10.1"   # ifHCOutOctets.1
 ```
@@ -232,6 +233,7 @@ One SNMP get: one request, with all the OIDs as varbinds of one PDU.
 - Requests are not retried, so that losses show in the records.
 - Values are recorded raw: counters are not turned into rates.
 - Put `sysUpTime.0` (`1.3.6.1.2.1.1.3.0`) in the same request as the counters. It shows when the agent restarted, and gives the exact time between two samples. It wraps after about 497 days.
+- Put an OID that names the row, such as `ifName` (`1.3.6.1.2.1.31.1.1.1.1.<ifIndex>`), in the same request as its counters. After a restart of the device or a change of its configuration, an index such as `ifIndex` can point to another interface. Detchi records the values raw and does not look the index up again, so the name in each record is what tells which interface the values belong to. `ifDescr` or `ifAlias` works as well. Some devices can keep the index across restarts (on Cisco IOS, `snmp ifmib ifindex persist`).
 - Prefer the 64-bit counters (`ifHCInOctets` and so on). The 32-bit `ifInOctets` wraps in about 34 seconds at 1 Gbps.
 - A request larger than the agent accepts is dropped by the agent without an answer, and is recorded as a `timeout`, not `tooBig`. If a probe with many OIDs always times out, split it.
 - An agent that is not there, a closed port, and a wrong community all look the same: a `timeout`.
