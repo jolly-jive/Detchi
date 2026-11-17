@@ -37,7 +37,7 @@ defmodule Detchi.ProbeTest do
     %{table: table, writer: writer}
   end
 
-  defp start_probe(ctx, measure, probe \\ []) do
+  defp start_probe(ctx, measure, probe \\ [], opts \\ []) do
     probe =
       struct!(
         %ProbeConfig{name: "ping", protocol: :icmp, interval_ms: 100, timeout_ms: 50},
@@ -46,16 +46,18 @@ defmodule Detchi.ProbeTest do
 
     start_supervised!(
       {Probe,
-       target: "core1", probe: probe, writer: ctx.writer, table: ctx.table, measure: measure}
+       [target: "core1", probe: probe, writer: ctx.writer, table: ctx.table, measure: measure] ++
+         opts}
     )
   end
 
-  # Tells the test about each attempt, and returns `result`.
+  # Tells the test about each attempt, with the time on the monotonic
+  # clock, and returns `result`.
   defp answering(result) do
     test = self()
 
     fn addr, probe ->
-      send(test, {:attempt, addr, probe.name, System.os_time(:millisecond)})
+      send(test, {:attempt, addr, probe.name, System.monotonic_time(:millisecond)})
       Map.put(result, :ts, System.os_time(:microsecond))
     end
   end
@@ -92,14 +94,23 @@ defmodule Detchi.ProbeTest do
   end
 
   test "attempts at the phase on the wall clock, in steps of the interval", ctx do
-    start_probe(ctx, answering(%{status: :ok, rtt_us: 10}), interval_ms: 1_000, timeout_ms: 500)
+    # A wall clock that goes with the monotonic one. The real one may
+    # step while the test runs (WSL2 steps it by hundreds of
+    # milliseconds), which would move all the attempts off the phase.
+    offset_ms = System.os_time(:millisecond) - System.monotonic_time(:millisecond)
+    clock = fn -> System.monotonic_time(:microsecond) + offset_ms * 1000 end
+
+    start_probe(ctx, answering(%{status: :ok, rtt_us: 10}), [interval_ms: 1_000, timeout_ms: 500],
+      clock: clock
+    )
+
     Addresses.put(ctx.table, "core1", @addr)
     phase = Probe.phase("core1", "ping", 1_000)
 
     times =
       for _ <- 1..3 do
         assert_receive {:attempt, @addr, "ping", t}, 2_000
-        t
+        t + offset_ms
       end
 
     # Off the phase in either direction: the clocks are read in whole

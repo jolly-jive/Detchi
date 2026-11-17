@@ -42,6 +42,7 @@ defmodule Detchi.Probe do
           | {:table, atom()}
           | {:snmp, Detchi.Config.Target.snmp() | nil}
           | {:measure, measure()}
+          | {:clock, (-> integer())}
 
   @doc """
   Starts a Probe.
@@ -55,6 +56,8 @@ defmodule Detchi.Probe do
     * `:snmp`: the `snmp` of the target, for an SNMP probe.
     * `:measure`: runs one attempt, as `Detchi.Icmp.measure/2`. Defaults
       to the one of the protocol. For tests.
+    * `:clock`: the wall clock in microseconds, for the time of the
+      first attempt. For tests.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -98,6 +101,7 @@ defmodule Detchi.Probe do
     %ProbeConfig{} = probe = Keyword.fetch!(opts, :probe)
     target = Keyword.fetch!(opts, :target)
     snmp = Keyword.get(opts, :snmp)
+    clock = Keyword.get(opts, :clock, fn -> System.os_time(:microsecond) end)
 
     state = %{
       target: target,
@@ -113,7 +117,7 @@ defmodule Detchi.Probe do
 
     delay =
       first_delay(
-        System.os_time(:millisecond),
+        div(clock.(), 1000),
         probe.interval_ms,
         phase(target, probe.name, probe.interval_ms)
       )
