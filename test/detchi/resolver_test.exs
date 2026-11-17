@@ -232,20 +232,26 @@ defmodule Detchi.ResolverTest do
   end
 
   test "an unresolved name is retried sooner, doubling up to the interval", ctx do
-    start_resolver(ctx, first_retry_ms: 20, resolve_interval_ms: 80)
+    # The waits are taken from the timers set, not measured, so that a
+    # loaded machine does not make the test fail.
+    test = self()
 
-    times =
-      for _ <- 1..5 do
-        assert_receive {:lookup, _, :inet, _}, 1000
-        assert_receive {:lookup, _, :inet6, _}, 1000
-        System.monotonic_time(:millisecond)
-      end
-
-    gaps = times |> Enum.chunk_every(2, 1, :discard) |> Enum.map(fn [a, b] -> b - a end)
-
-    # The first time is that of the first lookup, in handle_continue.
-    for {gap, wait} <- Enum.zip(gaps, [20, 40, 80, 80]) do
-      assert gap >= wait and gap < wait + 50
+    send_after = fn _pid, :resolve, ms ->
+      send(test, {:timer, ms})
+      make_ref()
     end
+
+    resolver =
+      start_resolver(ctx, first_retry_ms: 20, resolve_interval_ms: 100, send_after: send_after)
+
+    # The first timer is set by the first lookup, in handle_continue.
+    assert_received {:timer, 20}
+
+    for wait <- [40, 80, 100, 100] do
+      resolve_again(resolver)
+      assert_received {:timer, ^wait}
+    end
+
+    refute_received {:timer, _}
   end
 end

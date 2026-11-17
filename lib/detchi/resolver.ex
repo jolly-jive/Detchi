@@ -37,6 +37,7 @@ defmodule Detchi.Resolver do
           | {:register, (:inet.ip_address() -> :ok)}
           | {:lookup, lookup()}
           | {:first_retry_ms, pos_integer()}
+          | {:send_after, (pid(), term(), non_neg_integer() -> reference())}
 
   @doc """
   Starts a Resolver.
@@ -55,6 +56,7 @@ defmodule Detchi.Resolver do
     * `:lookup`: looks up a host name, as `:inet.getaddrs/3`. For tests.
     * `:first_retry_ms`: the first wait for retries while the host name
       has never resolved. For tests.
+    * `:send_after`: sets a timer, as `Process.send_after/3`. For tests.
   """
   @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts) do
@@ -74,6 +76,7 @@ defmodule Detchi.Resolver do
       table: Keyword.get(opts, :table, Addresses),
       register: Keyword.get(opts, :register, fn _ -> :ok end),
       lookup: Keyword.get(opts, :lookup, &:inet.getaddrs/3),
+      send_after: Keyword.get(opts, :send_after, &Process.send_after/3),
       # nil while the host name has never resolved.
       addr: nil,
       # The next wait while the host name has never resolved.
@@ -144,7 +147,7 @@ defmodule Detchi.Resolver do
     case state.addr do
       nil ->
         Addresses.put(state.table, state.target.name, {:unresolved, errno})
-        Process.send_after(self(), :resolve, state.retry_ms)
+        state.send_after.(self(), :resolve, state.retry_ms)
         %{state | retry_ms: min(state.retry_ms * 2, state.interval_ms)}
 
       _ ->
@@ -153,7 +156,7 @@ defmodule Detchi.Resolver do
   end
 
   defp schedule(state) do
-    Process.send_after(self(), :resolve, state.interval_ms)
+    state.send_after.(self(), :resolve, state.interval_ms)
     state
   end
 
