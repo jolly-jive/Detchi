@@ -371,14 +371,99 @@ defmodule Detchi.Config.ValidatorTest do
       assert errors(yaml) == [{"credentials.c", :missing_key}]
     end
 
-    test "v3 is not supported yet, and its keys are not reported as unknown" do
-      yaml = """
-      credentials: { c: { version: v3, user: u, auth: sha256, auth_pass: p } }
+    defp credentials(profiles_yaml) do
+      """
+      credentials:
+      #{profiles_yaml}
       targets:
         - { name: t, host: h, probes: [{ name: a, protocol: icmp }] }
       """
+    end
 
-      assert errors(yaml) == [{"credentials.c.version", :unsupported_version}]
+    test "v3 profiles of the three security levels" do
+      yaml =
+        credentials("""
+          ap: { version: v3, user: detchi, auth: sha256, auth_pass: "authpass", priv: aes128, priv_pass: "privpass" }
+          an: { version: v3, user: detchi, auth: sha, auth_pass: "authpass" }
+          nn: { version: v3, user: detchi }
+          md: { version: v3, user: detchi, auth: md5, auth_pass: "authpass", priv: des, priv_pass: "privpass" }
+        """)
+
+      # Profiles that no target uses are checked all the same.
+      assert {:ok, _config, []} = validate(yaml)
+
+      yaml =
+        credentials("""
+          ap: { version: v3, user: detchi, auth: sha256, auth_pass: "authpass", priv: aes128, priv_pass: "privpass" }
+        """) <>
+          "  - { name: u, host: h, snmp: { credential: ap }, probes: [{ name: a, protocol: icmp }] }\n"
+
+      assert {:ok, config, []} = validate(yaml)
+
+      assert %Credential{
+               version: :v3,
+               user: "detchi",
+               auth: :sha256,
+               auth_pass: "authpass",
+               priv: :aes128,
+               priv_pass: "privpass"
+             } = credential = Enum.at(config.targets, 1).snmp.credential
+
+      assert Credential.sec_level(credential) == :authPriv
+    end
+
+    test "v3 keys come in pairs, and priv needs auth" do
+      yaml =
+        credentials("""
+          a: { version: v3, user: u, auth: sha }
+          b: { version: v3, user: u, auth_pass: "authpass" }
+          c: { version: v3, user: u, priv: aes128, priv_pass: "privpass" }
+          d: { version: v3, user: u, auth: sha, auth_pass: "authpass", priv_pass: "privpass" }
+        """)
+
+      assert errors(yaml) == [
+               {"credentials.a", :missing_key},
+               {"credentials.b.auth_pass", :needs_key},
+               {"credentials.c.priv", :needs_key},
+               {"credentials.d.priv_pass", :needs_key}
+             ]
+    end
+
+    test "v3 values: user, passphrases and methods" do
+      yaml =
+        credentials("""
+          a: { version: v3, auth: sha, auth_pass: "authpass" }
+          b: { version: v3, user: "#{String.duplicate("u", 33)}" }
+          c: { version: v3, user: u, auth: md4, auth_pass: "short" }
+          d: { version: v3, user: u, auth: sha, auth_pass: "authpass", priv: aes256, priv_pass: "privpass" }
+          e: { version: v3, user: u, community: x }
+        """)
+
+      assert {:error, issues} = validate(yaml)
+
+      assert Enum.map(issues, &{Issue.format_path(&1.path), &1.reason, &1.detail}) == [
+               {"credentials.a", :missing_key, [key: "user"]},
+               {"credentials.b.user", :too_long, [max: 32]},
+               {"credentials.c.auth", :invalid_value,
+                [allowed: ["md5", "sha", "sha224", "sha256", "sha384", "sha512"]]},
+               {"credentials.c.auth_pass", :short_passphrase, [min: 8]},
+               {"credentials.d.priv", :invalid_value, [allowed: ["aes128", "des"]]},
+               {"credentials.e", :unknown_key, []}
+             ]
+    end
+
+    test "inspect hides the secrets and the v3 user" do
+      credential = %Credential{
+        name: "ap",
+        version: :v3,
+        user: "s3cr3t-user",
+        auth: :sha,
+        auth_pass: "s3cr3t-auth",
+        priv: :aes128,
+        priv_pass: "s3cr3t-priv"
+      }
+
+      assert inspect(credential) == "#Detchi.Config.Credential<ap, v3, authPriv, [redacted]>"
     end
 
     test "profile names follow the name rule" do

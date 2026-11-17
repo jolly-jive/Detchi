@@ -130,14 +130,41 @@ $ detchi check-config
 ```yaml
 credentials:
   campus-v2c: { version: v2c, community: "..." }
+  core-v3:    { version: v3, user: "...", auth: sha256, auth_pass: "...", priv: aes128, priv_pass: "..." }
 ```
+
+名前は[名前の規則](#名前)に従います。
+
+### v2c
 
 | キー | |
 | --- | --- |
-| `version` | `v2c`。`v3` にはまだ対応しておらず、誤りになります。 |
-| `community` | community の文字列。空でない文字列。 |
+| `version` | `v2c`。 |
+| `community` | (必須)community の文字列。空でない文字列。 |
 
-名前は[名前の規則](#名前)に従います。
+### v3
+
+| キー | |
+| --- | --- |
+| `version` | `v3`。 |
+| `user` | (必須)ユーザー名。32 バイトまで。 |
+| `auth` | 認証の方式。`md5`、`sha`(SHA-1)、`sha224`、`sha256`、`sha384`、`sha512`。 |
+| `auth_pass` | 認証のパスフレーズ。8 バイト以上。`auth` があれば必須。 |
+| `priv` | 暗号の方式。`des`(DES CBC)か `aes128`(AES-128 CFB)。`auth` が要ります。 |
+| `priv_pass` | 暗号のパスフレーズ。8 バイト以上。`priv` があれば必須。 |
+
+書いたキーで、セキュリティレベルが決まります。
+
+| キー | セキュリティレベル |
+| --- | --- |
+| `user` | noAuthNoPriv |
+| `user`、`auth`、`auth_pass` | authNoPriv |
+| `user`、`auth`、`auth_pass`、`priv`、`priv_pass` | authPriv |
+
+- MD5 と DES は弱い方式です。ほかの方式を持たない機器にだけ使ってください。AES-192 と AES-256 は使えません。Erlang/OTP の SNMP のマネージャーにないためです。
+- 暗号の鍵は、`priv_pass` から `auth` のハッシュで作ります。RFC 3414、RFC 3826 と、多くの機器と同じです。
+- 同じ `user` とパスフレーズを、多くの機器で共有できます。Detchi は機器ごとに engine ID を調べて、パスフレーズから鍵を作ります。
+- 同じ機器(同じ engine ID)に同じ `user` で届く2つの機器には、同じ資格情報を書いてください。違うと、後から来たほうの機器の行が `internal` になり、Detchi のログに両方の機器の名前が出ます。Erlang/OTP の SNMP のマネージャーは、機器とユーザーの組ごとに鍵を1つしか持てないためです。
 
 ## targets
 
@@ -237,6 +264,13 @@ SNMP の get を1回行います。1回の要求で、すべての OID を1つ�
 - 64 ビットのカウンター(`ifHCInOctets` など)を勧めます。32 ビットの `ifInOctets` は、1Gbps で約 34 秒で一周します。
 - エージェントが受け付けられるより大きい要求は、エージェントが応答せずに捨てるので、`tooBig` ではなく `timeout` として記録されます。OID の多い測定がいつも `timeout` になるなら、分けてください。
 - エージェントがいない、ポートが閉じている、community が誤っている、のどれも同じく `timeout` になります。
+- v3 では、ユーザー名やパスフレーズが誤っていると、`snmp_report` の `error` になります([記録](records.ja.md#エラー)を参照)。エージェントが report を返すためです。v3 に対応していない機器では `timeout` になります。
+
+#### v3
+
+- Detchi は、最初の要求のときに機器の engine ID を調べます。機器が engine ID が違うと答えたとき(`usmStatsUnknownEngineIDs`。`snmp_report` として記録します)も、次の要求で調べ直します。
+- Detchi は、最初の要求のときと、機器が再起動した後に、機器の時計に合わせます(RFC 3414 の 2.3 節)。機器は最初の要求に report(`usmStatsNotInTimeWindows`)で答え、Detchi は要求をもう1回送ります。失われた要求の再送ではありません。行はいつもどおり記録され、`ts` と `rtt_us` は2回目の要求のものです。
+- これらはすべて、測定の `timeout` の中に収まります。
 
 ## 名前
 
@@ -282,7 +316,7 @@ targets:
 
 ## 資格情報の扱い
 
-設定ファイルには、SNMP の community が平文で入ります。
+設定ファイルには、SNMP の community と v3 のパスフレーズが平文で入ります。
 
 - Detchi は、それを記録、エラーメッセージ、ログのどこにも出しません。
 - 設定ファイルを人に見せると、資格情報も見せることになります。機器の定義を人に見せるときは、`detchi check-config --fingerprints` の出力を使ってください。資格情報は入りません。

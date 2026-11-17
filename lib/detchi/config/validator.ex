@@ -37,8 +37,6 @@ defmodule Detchi.Config.Validator do
     "snmp" => ~w(oids)
   }
 
-  # The v3 keys follow the draft in docs/basic-design.md, 7.2, so that a
-  # v3 profile reports only that v3 is not supported yet.
   @credential_keys %{
     "v2c" => ~w(version community),
     "v3" => ~w(version user auth auth_pass priv priv_pass)
@@ -46,6 +44,20 @@ defmodule Detchi.Config.Validator do
 
   @any_protocol_keys @protocol_keys |> Map.values() |> Enum.concat() |> Enum.uniq()
   @any_credential_keys @credential_keys |> Map.values() |> Enum.concat() |> Enum.uniq()
+
+  # All that snmpm of OTP has (docs/basic-design.md, 5).
+  @auths %{
+    "md5" => :md5,
+    "sha" => :sha,
+    "sha224" => :sha224,
+    "sha256" => :sha256,
+    "sha384" => :sha384,
+    "sha512" => :sha512
+  }
+  @privs %{"des" => :des, "aes128" => :aes128}
+  # SnmpAdminString (RFC 3411) and the minimum of RFC 3414, 11.2.
+  @max_user_bytes 32
+  @min_passphrase_bytes 8
 
   @protocols %{"icmp" => :icmp, "tcp" => :tcp, "udp" => :udp, "snmp" => :snmp}
   @services %{"dns" => :dns, "ntp" => :ntp, "quic" => :quic}
@@ -154,16 +166,77 @@ defmodule Detchi.Config.Validator do
             {community, []} -> {%Credential{name: name, version: :v2c, community: community}, []}
           end
 
+        {:v3, []} ->
+          v3_credential(m, pos, path, name)
+
         {_, issues} ->
           {:invalid, issues}
       end
     end)
   end
 
-  defp credential_version({:str, pos, "v3"}, path),
-    do: {:invalid, [issue(path, pos, :unsupported_version)]}
-
   defp credential_version(node, path), do: enum(node, path, %{"v2c" => :v2c, "v3" => :v3})
+
+  # Without auth the profile is noAuthNoPriv; priv needs auth.
+  defp v3_credential(m, pos, path, name) do
+    {fields, issues} =
+      collect_partial(
+        user: required(m, "user", path, pos, &user_name/2),
+        auth: optional(m, "auth", path, nil, &enum(&1, &2, @auths)),
+        auth_pass: optional(m, "auth_pass", path, nil, &passphrase/2),
+        priv: optional(m, "priv", path, nil, &enum(&1, &2, @privs)),
+        priv_pass: optional(m, "priv_pass", path, nil, &passphrase/2)
+      )
+
+    issues =
+      issues ++
+        needs(m, pos, path, "auth", "auth_pass") ++
+        needs(m, pos, path, "auth_pass", "auth") ++
+        needs(m, pos, path, "priv", "priv_pass") ++
+        needs(m, pos, path, "priv_pass", "priv") ++
+        needs(m, pos, path, "priv", "auth")
+
+    if valid?(fields) and issues == [],
+      do: {struct!(Credential, Map.merge(fields, %{name: name, version: :v3})), []},
+      else: {:invalid, issues}
+  end
+
+  # If `key` is given, `other` must be too.
+  defp needs(m, pos, path, key, other) do
+    cond do
+      not Map.has_key?(m, key) or Map.has_key?(m, other) ->
+        []
+
+      # A missing secret is reported at the profile, as missing keys are.
+      other in ["auth_pass", "priv_pass"] ->
+        [issue(path, pos, :missing_key, detail: [key: other])]
+
+      true ->
+        {key_pos, _node} = Map.fetch!(m, key)
+        [issue(path ++ [key], key_pos, :needs_key, detail: [key: other])]
+    end
+  end
+
+  defp user_name(node, path) do
+    case string(node, path) do
+      {text, []} when byte_size(text) > @max_user_bytes ->
+        {:invalid, [issue(path, node_pos(node), :too_long, detail: [max: @max_user_bytes])]}
+
+      result ->
+        result
+    end
+  end
+
+  defp passphrase(node, path) do
+    case string(node, path) do
+      {text, []} when byte_size(text) < @min_passphrase_bytes ->
+        detail = [min: @min_passphrase_bytes]
+        {:invalid, [issue(path, node_pos(node), :short_passphrase, detail: detail)]}
+
+      result ->
+        result
+    end
+  end
 
   defp targets(node, path, ctx) do
     case list(node, path, &target(&1, &2, ctx)) do

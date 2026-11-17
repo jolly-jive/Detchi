@@ -169,8 +169,8 @@ defmodule Detchi.Probe do
 
   # snmpm sends to the address the target is registered at, and the
   # line tells which (Detchi.Snmp.measure/3).
-  defp measure(%ProbeConfig{protocol: :snmp}, target, %{credential: %{version: version}}),
-    do: fn _addr, probe -> Detchi.Snmp.measure(target, version, probe) end
+  defp measure(%ProbeConfig{protocol: :snmp}, target, %{credential: credential}),
+    do: fn _addr, probe -> Detchi.Snmp.measure(target, credential, probe) end
 
   defp schedule(state, due) do
     Process.send_after(self(), :tick, due, abs: true)

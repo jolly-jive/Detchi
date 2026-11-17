@@ -94,7 +94,7 @@ Examples:
 | `errno` | An error of the socket without ICMP details (a TCP RST, no route on the host, and so on) | `errno` | `refused`, `unreachable` |
 | `icmp` | An ICMP error came back for an ICMP, TCP, or UDP probe | `type`, `code`, `from` | `refused` (Port Unreachable), `unreachable` (the others) |
 | `snmp` | The SNMP answer had a non-zero `errorStatus` | `error_status`, `error_index` | `error` |
-| `snmp_report` | A report PDU of SNMPv3 came back (for v3, which is not supported yet) | `oid` | `error` |
+| `snmp_report` | A report PDU of SNMPv3 came back instead of an answer | `oid` | `error` |
 | `resolve` | The host name has never been looked up | `errno` | `error` |
 | `internal` | A failure Detchi did not expect. The details are in the log of Detchi. | | `error` |
 
@@ -194,8 +194,18 @@ Examples:
 - The `status` is only `ok`, `timeout`, or `error`.
 - No agent, a closed port, and a wrong community all give `timeout`: SNMP does not see ICMP errors.
 - A request larger than the agent accepts is dropped by the agent, and gives `timeout`, not `tooBig`.
-- Requests are not retried, so each `timeout` is one lost request.
-- `rtt_us` includes the time inside the SNMP manager of Erlang (about 0.3 to 1.1 ms on loopback, against 0.15 ms of ICMP).
+- Requests are not retried, so each `timeout` is one lost request. With v3, a request is sent once more after the agent tells the time is out of sync; that is part of the protocol, not a retry (see [configuration](configuration.md#v3-1)).
+- `rtt_us` includes the time inside the SNMP manager of Erlang (about 0.3 to 1.1 ms on loopback, against 0.15 ms of ICMP; 0.4 to 0.6 ms with v3 authPriv).
+- The `oid` of an `snmp_report` is numeric, like the varbinds. Those you may see:
+
+  | `oid` | Name | Usual cause |
+  | --- | --- | --- |
+  | `1.3.6.1.6.3.15.1.1.1.0` | `usmStatsUnsupportedSecLevels` | The user is not set up for this security level on the agent. |
+  | `1.3.6.1.6.3.15.1.1.2.0` | `usmStatsNotInTimeWindows` | The clocks did not sync within the timeout. |
+  | `1.3.6.1.6.3.15.1.1.3.0` | `usmStatsUnknownUserNames` | A wrong `user`. |
+  | `1.3.6.1.6.3.15.1.1.4.0` | `usmStatsUnknownEngineIDs` | The engine ID of the agent changed. The next request finds the new one. |
+  | `1.3.6.1.6.3.15.1.1.5.0` | `usmStatsWrongDigests` | A wrong `auth` or `auth_pass`. |
+  | `1.3.6.1.6.3.15.1.1.6.0` | `usmStatsDecryptionErrors` | A wrong `priv_pass`. |
 
 ### All protocols
 

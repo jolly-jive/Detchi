@@ -1,4 +1,4 @@
-# The sample of docs/basic-design.md, 7.2, without the v3 profile.
+# The sample of docs/basic-design.md, 7.2, with secrets long enough to pass.
 data_dir: /var/lib/detchi
 retention_days: 1827
 compression: gzip
@@ -11,6 +11,7 @@ defaults:
 
 credentials:
   campus-v2c: { version: v2c, community: "s3cr3t-community" }
+  core-v3:    { version: v3, user: "detchi", auth: sha256, auth_pass: "s3cr3t-auth", priv: aes128, priv_pass: "s3cr3t-priv" }
 
 x-switch-probes: &switch
   - { name: ping, protocol: icmp }

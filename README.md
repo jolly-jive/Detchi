@@ -17,7 +17,7 @@ Written in Elixir/OTP. Made to be built into [Koitohan](https://github.com/jolly
 ## Features (so far)
 
 - RTT over ICMP Echo, TCP connect, and UDP (DNS, NTP, QUIC).
-- SNMP v2c get. v3 is not supported yet.
+- SNMP get, v2c and v3 (noAuthNoPriv, authNoPriv, and authPriv; MD5, SHA-1 and SHA-2, DES and AES-128).
 - One YAML config file, checked strictly: unknown keys, duplicate keys, and wrong types stop Detchi at startup, with the line and column.
 - Credentials never appear in the records, error messages, or logs.
 - Measurements of a probe start at a fixed phase of its interval, taken from the names, so they are spread out and stay the same across restarts.
