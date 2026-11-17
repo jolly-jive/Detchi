@@ -120,7 +120,9 @@ defmodule Detchi.HousekeeperTest do
       Housekeeper.file_closed(housekeeper, path)
       Housekeeper.file_closed(housekeeper, path)
 
-      assert capture_log(fn -> done(housekeeper) end) == ""
+      # capture_log also catches the logs of other async tests, so look only
+      # for the lines about this test's directory.
+      refute capture_log(fn -> done(housekeeper) end) =~ dir
       assert ls(dir) == ["core1", "core1/core1-2026-10-26.jsonl.gz"]
     end
 
@@ -222,8 +224,9 @@ defmodule Detchi.HousekeeperTest do
     test "no data_dir yet", %{tmp_dir: dir} do
       data_dir = Path.join(dir, "data")
 
-      assert capture_log(fn -> start_housekeeper(data_dir, "2026-10-27T10:00:00+09:00") end) ==
-               ""
+      # See "a file done already is skipped" for why not == "".
+      refute capture_log(fn -> start_housekeeper(data_dir, "2026-10-27T10:00:00+09:00") end) =~
+               dir
     end
 
     test "again after the interval", %{tmp_dir: dir} do
