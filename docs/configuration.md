@@ -130,14 +130,41 @@ Named SNMP credentials, used by targets through `snmp.credential`.
 ```yaml
 credentials:
   campus-v2c: { version: v2c, community: "..." }
+  core-v3:    { version: v3, user: "...", auth: sha256, auth_pass: "...", priv: aes128, priv_pass: "..." }
 ```
+
+The names follow the [name rule](#names).
+
+### v2c
 
 | Key | |
 | --- | --- |
-| `version` | `v2c`. `v3` is not supported yet, and is an error. |
-| `community` | The community string. A non-empty string. |
+| `version` | `v2c`. |
+| `community` | (required) The community string. A non-empty string. |
 
-The names follow the [name rule](#names).
+### v3
+
+| Key | |
+| --- | --- |
+| `version` | `v3`. |
+| `user` | (required) The user name. Up to 32 bytes. |
+| `auth` | The authentication protocol: `md5`, `sha` (SHA-1), `sha224`, `sha256`, `sha384`, or `sha512`. |
+| `auth_pass` | The authentication passphrase. At least 8 bytes. Required with `auth`. |
+| `priv` | The privacy protocol: `des` (DES CBC) or `aes128` (AES-128 CFB). Needs `auth`. |
+| `priv_pass` | The privacy passphrase. At least 8 bytes. Required with `priv`. |
+
+The keys given set the security level:
+
+| Keys | Security level |
+| --- | --- |
+| `user` | noAuthNoPriv |
+| `user`, `auth`, `auth_pass` | authNoPriv |
+| `user`, `auth`, `auth_pass`, `priv`, `priv_pass` | authPriv |
+
+- MD5 and DES are weak; use them only for devices that have nothing better. AES-192 and AES-256 are not available: the SNMP manager of Erlang/OTP does not have them.
+- The privacy key is made from `priv_pass` with the hash of `auth`, as RFC 3414 and RFC 3826 and most devices do.
+- The same `user` and passphrases can be shared by many devices: Detchi learns the engine ID of each device, and makes its keys from the passphrases.
+- Two targets that reach the same device (the same engine ID) with the same `user` must have the same credential. If they do not, the target that comes second records `internal`, and the log of Detchi names both targets. The SNMP manager of Erlang/OTP holds one key per device and user.
 
 ## targets
 
@@ -237,6 +264,13 @@ One SNMP get: one request, with all the OIDs as varbinds of one PDU.
 - Prefer the 64-bit counters (`ifHCInOctets` and so on). The 32-bit `ifInOctets` wraps in about 34 seconds at 1 Gbps.
 - A request larger than the agent accepts is dropped by the agent without an answer, and is recorded as a `timeout`, not `tooBig`. If a probe with many OIDs always times out, split it.
 - An agent that is not there, a closed port, and a wrong community all look the same: a `timeout`.
+- With v3, a wrong user or passphrase is an `error` with an `snmp_report` (see [records](records.md#errors)), as the agent answers with a report. A device that does not do v3 gives a `timeout`.
+
+#### v3
+
+- Detchi learns the engine ID of the device on the first request, and again after the device answers that it has another one (`usmStatsUnknownEngineIDs`, recorded as an `snmp_report`).
+- Detchi syncs with the clock of the device (RFC 3414, 2.3) on the first request, and after the device restarts. The device answers the first try with a report (`usmStatsNotInTimeWindows`), and Detchi sends the request once more. This is not a retry of a lost request: the line is recorded as usual, with the `ts` and `rtt_us` of the second request.
+- All of this fits in the `timeout` of the probe.
 
 ## Names
 
@@ -282,7 +316,7 @@ On a restart, the `stop` and `start` lines in the records show the gap. Each `st
 
 ## Credentials and safety
 
-The file holds the SNMP communities in plain text.
+The file holds the SNMP communities and the v3 passphrases in plain text.
 
 - Detchi never writes them to the records, error messages, or logs.
 - Showing the file to someone shows them the credentials too. Use `detchi check-config --fingerprints` to share the definitions of targets; its output holds no credentials.

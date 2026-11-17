@@ -17,7 +17,7 @@ Elixir/OTP で書いています。[Koitohan](https://github.com/jolly-jive/Koit
 ## 機能(現時点)
 
 - ICMP Echo、TCP の接続、UDP(DNS、NTP、QUIC)の RTT。
-- SNMP v2c の get。v3 にはまだ対応していません。
+- SNMP の get。v2c と v3(noAuthNoPriv、authNoPriv、authPriv。MD5、SHA-1、SHA-2、DES、AES-128)。
 - 設定ファイルは YAML で1つだけ。厳しく検査します。知らないキー、重なったキー、型の誤りがあれば、起動のときに行と桁を示して止まります。
 - 資格情報は、記録、エラーのメッセージ、ログのどこにも出しません。
 - 測る時刻は、名前から決まる位相で間隔の中に散らばり、再起動しても変わりません。

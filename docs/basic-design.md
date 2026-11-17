@@ -46,7 +46,7 @@ NexPinger とは**コードを共有しない**(ライブラリ化も、Hex.pm �
 
 - Elixir/OTP で書く。対象は Linux だけ。
 - 要求する OTP は **28 以上**(zstd のため。6.3 節)。
-- SNMP は OTP 標準の `snmp` アプリケーション(マネージャーの `snmpm`)を使う。v1、v2c、v3 に対応しており、外部の依存が要らない。v2c の get で動くことを確かめた(2026-10-24。5 節)。
+- SNMP は OTP 標準の `snmp` アプリケーション(マネージャーの `snmpm`)を使う。v1、v2c、v3 に対応しており、外部の依存が要らない。v2c の get で動くことを確かめた(2026-10-24。5 節)。v3 の get も確かめた(2026-11-17。engine ID の発見と時刻の同期は Detchi が行う。5 節)。
 - 形は **escript**(NexPinger と同じ)。1つのファイル `detchi` に、サブコマンドを持たせる。
   - `detchi run`:サービスとして動き続ける。
   - `detchi check-config`:設定を確かめる(7.9 節)。
@@ -333,12 +333,41 @@ NexPinger(`lib/nexpinger/prober.ex`)は `:gen_tcp.connect/4` でつなぎ、つ�
     - 要求が `max_message_size` を超える:`{error, {send_failed, ReqId, tooBig}}`。
     - `snmpm` は再送しない。community を誤った要求を 3 秒待つ間に、エージェントの `snmpInBadCommunityNames` は 1 だけ増えた。7.4 節の「再送 0 回」は、何も設定しなくてもそうなる。
   - **機器が受け付けられる大きさを超える要求は、`tooBig` ではなく `timeout` になる。** エージェントの最大の大きさを 484 にして、約 39KB の要求(OID 3000 個)を送ると、エージェントは黙って捨てた。`tooBig` は応答が大きすぎるときにだけ返る。OID を多く入れすぎた測定が `timeout` になりうることを、利用者向けの文書に書く。
-  - 同じアドレスとポートに2つの機器を登録すると、アドレスから機器の名前を引く表(3.1 節)は、後に登録したほうで上書きされる。片方を消すと、もう片方の分も消える(確かめた)。v2c では困らないので、設定の検査では禁じない。v3 で効くかは 10 節。
+  - 同じアドレスとポートに2つの機器を登録すると、アドレスから機器の名前を引く表(3.1 節)は、後に登録したほうで上書きされる。片方を消すと、もう片方の分も消える(確かめた)。v2c では困らないので、設定の検査では禁じない。
+    - v3 でも禁じない(2026-11-17)。`handle_report/3` に渡る機器の名前はこの表から引くので、`handle_report/3` に来る report(下の v3 の時刻の同期)は、後に登録したほうの機器の Attempt に届く。先に登録したほうでは、時刻の同期の送り直しができず、その回が `timeout` になりうる。ただし、`snmpm` は report を受けたときに engine ID ごとの時刻の写しを直すので、次の回は通る。損は、起動したときと機器が再起動したときに1行ずつで、禁じるほどではない。
   - **SNMP の行の `status` は `ok`、`timeout`、`error` だけになる。** `snmpm` のソケットは機器ごとに connect していないので、ICMP の誤り(Port Unreachable など)が見えない。エージェントがいない、ポートが閉じている、community が誤っている、のどれも `timeout` になる。利用者向けの文書に書く。
   - **RTT には `snmpm` の処理の時間が含まれる。** `sync_get2` の前後で測るので、マネージャーの内部のプロセスを渡る時間が入る。ループバックで 0.3〜1.1ms(ICMP は 0.15ms)。利用者向けの文書に書く。
-    - `snmpm` は自分のプロセスの中で要求を組み立てて送るので、本当に送った時刻は Detchi から取れない。`ts` と RTT の起点は `sync_get2` を呼ぶ直前にする(3.1 節)。要求の組み立て(v3 では認証と暗号の計算も)が RTT に入る。v3 の分は、v3 を実装するときに測る。
-- 版は v2c と v3 の両方に対応する。v3 は後回しでもよい。
-  - v3 の注意:`snmpm` の USM は、パスフレーズではなく、機器の engine ID で局所化した鍵を受け取る。パスフレーズを書いてもらい、engine ID を取得してから鍵に変換することになる。
+    - `snmpm` は自分のプロセスの中で要求を組み立てて送るので、本当に送った時刻は Detchi から取れない。`ts` と RTT の起点は `sync_get2` を呼ぶ直前にする(3.1 節)。要求の組み立て(v3 では認証と暗号の計算も)が RTT に入る。v3 の分は下の v3 の項。
+- 版は v2c と v3 の両方に対応する。v3 は 2026-11-17 に実装した。以下は、手元の `snmpa`(OTP 29、snmp 5.20.4)を相手に確かめたこと。
+  - 方式:認証は MD5、SHA-1、SHA-224、SHA-256、SHA-384、SHA-512。暗号は DES(CBC)と AES-128(CFB)。noAuthNoPriv、authNoPriv、authPriv のどれも受け付ける(7.2 節)。`snmpm` が持つものすべて。AES-192 と AES-256 は `snmpm` が持たない。
+    - MD5 と DES も受け付ける(2026-11-17 に決めた)。弱いことを理由に断るなら、平文の community の v2c も断るべきことになるため。弱さは利用者向けの文書に書く。
+    - DES は、OpenSSL 3 では legacy の扱いで、`crypto` が使えないことがある。使えなければ `snmpm` が USM のユーザーの登録を断り、その行は `internal` になる。
+  - 鍵:`snmpm` の USM は、パスフレーズではなく、機器の engine ID で局所化した鍵を受け取る。パスフレーズを書いてもらい、engine ID を調べてから `snmp:passwd2localized_key/3` で鍵にする。
+    - 暗号の鍵は、`priv_pass` を `auth` のハッシュで局所化した鍵の先頭 16 バイト。DES では鍵と pre-IV(RFC 3414 の 8.1.1.1 節)、AES-128 では鍵(RFC 3826 の 1.2 節)。Cisco も net-snmp も同じ。
+    - 鍵の計算は、SHA-256 で約 13ms。engine ID を調べたときに1回だけ行う。
+    - noAuthNoPriv でも、USM のユーザーの登録は要る(ないと `snmpm` は送らずに `send_failed, unknownSecurityName` を返す)。
+    - **`snmpm` は、USM のユーザーを (engine ID, ユーザー名) の組で1つしか持てない。** 同じエージェントに同じユーザー名で届く機器は、同じ登録を使う。
+      - 2026-11-17 に実機で起きた:sw と、sw と同じアドレスで `auth_pass` だけを誤った機器を並べた。後から engine ID を調べた誤ったほうの鍵で登録が上書きされ、正しいほうの sw も、その後ずっと `usmStatsWrongDigests` になった。
+      - そこで、engine ID を調べたときに同じ組の登録がもうあれば、方式と鍵を比べる(`snmpm:usm_user_info/3`)。同じならそのまま使う。違えば上書きせず、後から来た機器の Attempt を例外で終える(行は `internal`)。ログには、両方の機器の名前を出す(資格情報は出さない)。誰が登録したかは、待っている Attempt の ETS の表に `{{:usm, engine_id, user}, 機器}` で入れておく。
+      - 先に調べたほうが勝つので、どちらが正しいかは Detchi には分からない。それでも、正しいほうが黙って壊れ続けるよりよい(2026-11-17 に決めた)。設定の検査では engine ID が分からないので、起動の前には見つけられない。
+      - 前の登録は外さない。同じ機器が engine ID を調べ直したとき(アドレスが変わったときなど)は、鍵が同じなので、そのまま使う。
+  - **engine ID の発見(RFC 3414 の 4 節)は Detchi が行う。** `snmpm` は実装していない(`snmpm:discovery` はコメントアウトされている)。
+    - 中身:engine ID、ユーザー名、varbind が空の、noAuthNoPriv の get(reportable)を UDP で送る。返った report(`usmStatsUnknownEngineIDs`)の `msgAuthoritativeEngineID` を取る(`Detchi.Snmp.Discovery`。符号化と解読は `snmp_pdus`)。資格情報は入らない。
+    - いつ:Resolver は、v3 の機器を engine ID を空にして `snmpm` に登録する。Attempt が、engine ID が空なら調べ、USM のユーザーを登録してから、`snmpm:update_agent_info/4` で engine ID を入れる。登録し直し(アドレスが変わったとき、Resolver が起動し直したとき)と、`usmStatsUnknownEngineIDs` の report で空に戻し、次の Attempt が調べ直す。
+    - Resolver ではなく Attempt で調べる理由:Resolver で調べると、起動したときに機器が応答しなければ、Resolver が止まるか、調べ直す仕組みを別に持つことになる。Attempt なら、応答がなければその回が `timeout` の行になり、次の回にまた調べる。調べる時間も、測定の `timeout` の中に収める。`ts` は調べ始めた時刻。
+    - 1つの機器を同時に調べるのは、1つの Attempt だけ(`:global.set_lock/3` をこのノードの中だけで使う。持ち主が死ねば外れる)。ほかの Attempt は、自分の締め切りまで待つ。
+    - engine ID が空のまま `sync_get2` を呼ぶと、`snmpm` は送らずに `send_failed, unknownSecurityName` を返し、メッセージをログに出す。そうならないように、送る前に調べる。
+  - **時刻の同期(RFC 3414 の 2.3 節)も Detchi が行う。**
+    - 仕組み:v3 の認証付きのメッセージには、エージェントの engineBoots(起動の回数)と engineTime(起動してからの秒数)を書く。古いメッセージを送り直す攻撃を防ぐため。エージェントは、自分の値と食い違えば(engineBoots が違う、engineTime が 150 秒を超えてずれる)処理しない。代わりに `usmStatsNotInTimeWindows` の report を、自分の値を入れて、認証を付けて返す。マネージャーはそれで、engine ID ごとに持つエージェントの時刻の写しを直し、要求を送り直す。
+    - そのため、起動して最初の要求(写しがないので 0 を書く)と、エージェントが再起動した後の最初の要求(engineBoots が増える)は、必ず report で断られる。
+    - `snmpm` は写しを直すが、送り直さない。しかも、この report が要求のセキュリティの条件に合うと、待っている `sync_get2` ではなく、user の `handle_report/3` に渡す(`snmpm_server:handle_snmp_report/4`)。何もしなければ、timeout まで待って `timeout` の行になる(1000ms の timeout をそのまま待った)。条件に合わない report(パスフレーズの誤りのように、認証が通らないものなど)は、`{error, {invalid_sec_info, _, {_, _, Varbinds}}}` として `sync_get2` に返る。`usmStatsNotInTimeWindows` が、こちらで返ることもあった(テストで、両方の経路が起きた)。
+    - そこで、`Detchi.Snmp.User` の `handle_report/3` が、report を、その機器を待っている Attempt に送る(待っている Attempt は、`Detchi.Snmp.register_user/0` が作る ETS の表に入る)。Attempt は、`sync_get2` をタスクで動かし、タスクの結果と report の両方を待つ。`usmStatsNotInTimeWindows` が来たら(どちらの経路でも)、同じ Attempt の中で1回だけ送り直す。ほかの report は `snmp_report` の行にする(6.1 節)。
+    - **この送り直しは、時刻を合わせるプロトコルの手順で、失われた要求の再送ではない。** 「再送 0 回」(7.4 節)とはぶつからないと判断した(2026-11-17)。送り直さなければ、起動したときと機器が再起動したときに、機器は応答しているのに `timeout` の行が残り、記録として正しくない。行の `ts` と RTT は、送り直した要求のもの。送り直しも、測定の `timeout` の中に収める。
+    - `snmpm` は、user の関数を自分の別のプロセス(cbproxy)で呼ぶので、report が Attempt に届く時刻は少し遅れる。送り直した後に、1回目の要求への report が届くことがある。そのため、送り直した後に `handle_report/3` から来た `usmStatsNotInTimeWindows` は、1回目の分とみなして無視する。`handle_report/3` から来た report の RTT には、この遅れが入る。
+    - `handle_report/3` が受け取るのは機器の名前だけで、要求の ID はない。同じ機器に同時に2つの Attempt があると、片方への report が両方に届く。測る時刻は名前から散らしてある(7.5 節)ので、まず起きない。起きても、`usmStatsNotInTimeWindows` なら余分に1回送るだけで済む。
+    - `snmpm` の内部の `snmpm_config:set_usm_eboots/2` などで写しを直接書く案は、文書にない API なので採らなかった。テストで、機器の再起動を真似るのにだけ使う。
+  - RTT:ループバックで、authPriv の get が 0.4〜0.6ms(v2c は 0.3〜1.1ms)。認証と暗号の計算の分は目立たない。
+  - 確かめた report の OID:`usmStatsUnknownEngineIDs`(engine ID の誤り)、`usmStatsUnknownUserNames`(ユーザー名の誤り)、`usmStatsWrongDigests`(認証の鍵の誤り)、`usmStatsDecryptionErrors`(暗号の鍵の誤り)、`usmStatsNotInTimeWindows`。どれも `varbinds` の先頭の OID を `snmp_report` の `oid` に書く。
 
 ## 6. 記録
 
@@ -457,7 +486,7 @@ NexPinger(`lib/nexpinger/prober.ex`)は `:gen_tcp.connect/4` でつなぎ、つ�
   - ICMP の誤りでも誤りのキューが空なら(想定していないが)、`reason` は `errno` で書く。
 - ARP が引けないときの Host Unreachable は約 3 秒後に来るので、`timeout` が既定の 1 秒なら、先に `timeout` になる。
 - `snmp` の `error_status` は RFC 3416 の名前(`tooBig`、`genErr` など。varbinds の `type` と同じく RFC の綴り)。`error_index` は1から始まり、設定の `oids` の順を指す。0 は特定の varbind を指さない(`tooBig` は RFC 3416 のとおり 0 で返り、varbinds は空。2026-10-24 に確かめた)。この行には `varbinds` を書かない(誤りのときの値は意味を持たない)。
-- `snmp_report` の `oid` は、report PDU に入っていた `usmStats*` などの OID を数値で書く(5 節の方針と同じ。名前にはしない)。応答が返ってきているので `rtt_us` も付ける。`snmpm` がこの報告をどんな形で返すかは、v3 を実装するときに確かめる。
+- `snmp_report` の `oid` は、report PDU に入っていた `usmStats*` などの OID を数値で書く(5 節の方針と同じ。名前にはしない)。応答が返ってきているので `rtt_us` も付ける。`snmpm` が report をどんな形で返すかは 5 節。
 - `timeout` のときは `error` を書かず、`timeout_ms` を書く。
 
 出来事の行:
@@ -593,7 +622,7 @@ defaults:                    # 各測定で省略したときの値
 
 credentials:
   campus-v2c: { version: v2c, community: "..." }
-  core-v3:    { version: v3, user: "...", auth: sha256, auth_pass: "...", priv: aes128, priv_pass: "..." }   # v3 は未対応(下を参照)
+  core-v3:    { version: v3, user: "...", auth: sha256, auth_pass: "...", priv: aes128, priv_pass: "..." }
 
 targets:
   - name: core1              # 必須。形は 6.2 節
@@ -627,7 +656,12 @@ targets:
 - SNMP の資格情報は機器の単位で指定する。1台の機器の community は普通1つで、測定ごとに書くと繰り返しになる。
 - SNMP の測定1つが1回の要求にあたる(5 節の「OID の組」)。`op` は最初は `get` だけにして、GetBulk や walk は後で足す。
 - `defaults` の `timeout` は ICMP、TCP、UDP の測定にだけ当てる。SNMP には `snmp_timeout` を当てる(7.4 節の既定が違うため)。`timeout` を 1 か所で書くと、SNMP まで黙って短くなる、という事故を防ぐ。測定に書いた `timeout` は、どのプロトコルでもそれが勝つ。
-- 最初の版では、資格情報の `version` は `v2c` だけを受け付ける。`v3` は「まだ対応していない」という誤りにする(項目は 10 節の未決定事項)。上の例の v3 の項目(`user`、`auth`、`auth_pass`、`priv`、`priv_pass`)は、知らないキーとしては扱わない。
+- v3 の資格情報の項目(2026-11-17 に決めた)
+  - `user`(必須。32 バイトまで。RFC 3411 の SnmpAdminString)、`auth`(`md5`、`sha`、`sha224`、`sha256`、`sha384`、`sha512`)、`auth_pass`、`priv`(`des`、`aes128`)、`priv_pass`。
+  - セキュリティレベルは、書いたキーで決まる。`auth` がなければ noAuthNoPriv、`priv` がなければ authNoPriv、両方あれば authPriv。noAuthNoPriv も受け付ける。
+  - `auth` と `auth_pass`、`priv` と `priv_pass` は組で書く。`priv` には `auth` が要る。
+  - パスフレーズは 8 バイト以上(RFC 3414 の 11.2 節の勧め。net-snmp も同じ下限)。
+  - v3 のユーザー名も、資格情報として扱う(行、ログ、`inspect` に出さない)。
 - `targets` が空なのも誤り(`probes` が空なのと同じ理由)。
 - `host` に IP アドレスを書いたときは、`family` と食い違えば誤り(`ipv6` に IPv4 のアドレスなど)。ゾーンを付けた IPv6 のアドレス(`fe80::1%eth0`)は受け付けない(OTP の解析がゾーンを落とすため)。
 - `snmp` の段は、SNMP の測定がある機器では必須。SNMP の測定がない機器に書いてもよい。
@@ -646,7 +680,7 @@ targets:
 | `data_dir` | `/var/lib/detchi` | FHS に沿う。コンテナではここをマウントする。 |
 | `interval` | 60s | 6.4 節の量の見積もりと同じ。 |
 | `timeout` | RTT は 1s(`defaults.timeout`)、SNMP は 5s(`defaults.snmp_timeout`) | SNMP は機器の CPU 次第で遅い。 |
-| SNMP の再送 | 0 回 | 再送するとロスが記録に表れない。失敗も1行として残す方針(6.1 節)に合う。 |
+| SNMP の再送 | 0 回 | 再送するとロスが記録に表れない。失敗も1行として残す方針(6.1 節)に合う。v3 の時刻の同期での送り直しは、再送ではない(5 節)。 |
 | `resolve_interval` | 5m | 7.6 節。 |
 
 ### 7.5 測る時刻の分散
@@ -895,15 +929,11 @@ Koitohan は、Detchi がリリースされたら組み込む予定で、組み�
   - 提供する機能(整形、統計処理、可視化、チャート、警告のどこまでか)と形(CLI、ウェブ画面など)。
   - Koitohan に組み込むか、どう組み込むか。
 - 設定ファイルの細部(7 節のたたき台の残り)。
-  - v3 の資格情報の項目と、選べる認証と暗号の方式。
   - 受け継いだ値が誤りになったときの文(7.1 節)。今の文でも原因はたどれるので、急がない。
     - 値そのものの誤り(`defaults.interval: abc` など)は、書いた場所で1回だけ出る。困るのは、フィールドにまたがる確かめ(`timeout` < `interval`、NTP の `interval` の警告)が、`defaults` や組み込みの既定値から受け継いだ値で引っかかる場合。
     - たとえば `defaults.interval: 1s` とすると、`timeout` も `interval` も書いていない測定ごとに `timeout must be shorter than interval` が出る(サンプルでは 7 件)。位置は測定そのものを指し、原因の `defaults` は一度も出てこない(2026-10-25 に確かめた)。
     - 案:既定値を埋めるときに、値の出どころ(測定、`defaults` の位置、組み込み)も持つ。引っかかった値がすべて `defaults` から来ていれば、`defaults` の側で1回だけ出し、測定ごとには出さない。混ざっていれば測定の側で出し、文に出どころを書く(`timeout (1s, from defaults.timeout on line 9)` など)。ミリ秒の数と行番号は Detchi が作った値なので、ファイルの文字列を引かない決まりに反しない。
     - YAML のエイリアス(`*switch` など)で使い回した測定の誤りは、アンカーの位置を指すので、同じ位置が `targets[1]` と `targets[2]` で2回出る。エイリアスの位置も示すには、`yamerl_constr` が返す木にはエイリアスの情報が残らないので、パーサーのトークンを見る別の作業が要る。
-- スキーマの細部(6.1 節)。
-  - `snmpm` が v3 の report PDU をどんな形で返すか(`snmp_report` の行を書くため)。
-  - 同じアドレスとポートの機器が2つあるとき、v3 で困るか(5 節。アドレスから機器の名前を引く表が上書きされる)。困るなら、設定の検査で禁じる。
 - プロセスの構成の細部(3.1 節)。
   - 背圧によるドロップを判断する場所:Writer がディスクで詰まると、自分のメールボックスを捌けない。送る側で Writer のキューの長さを見て落とし、落とした数をカウンター(`atomics` など)で Writer に伝える形が考えられる。`dropped` の `first_ts` と `last_ts` も同じように渡す。Writer の中で書けなかった行の数え方(3.1 節)とは、1つの `dropped` の行にまとめる。
 - 手元のファイアウォールに落とされたときの errno(`eperm`)の扱い。

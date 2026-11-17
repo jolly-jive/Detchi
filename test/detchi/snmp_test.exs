@@ -13,6 +13,42 @@ defmodule Detchi.SnmpTest do
   @credential %Credential{name: "campus-v2c", version: :v2c, community: @community}
   @wrong %Credential{name: "wrong", version: :v2c, community: "wr0ng-community"}
 
+  @agent_engine_id ~c"agent"
+  @user "detchi-v3-user"
+  @auth_pass "s3cr3t-auth-pass"
+  @priv_pass "s3cr3t-priv-pass"
+
+  @auth_priv %Credential{
+    name: "ap",
+    version: :v3,
+    user: @user,
+    auth: :sha,
+    auth_pass: @auth_pass,
+    priv: :aes128,
+    priv_pass: @priv_pass
+  }
+  @auth_no_priv %Credential{
+    name: "an",
+    version: :v3,
+    user: @user <> "-an",
+    auth: :sha256,
+    auth_pass: @auth_pass
+  }
+  @no_auth_no_priv %Credential{name: "nn", version: :v3, user: @user <> "-nn"}
+  @md5_des %Credential{
+    name: "md",
+    version: :v3,
+    user: @user <> "-md",
+    auth: :md5,
+    auth_pass: @auth_pass,
+    priv: :des,
+    priv_pass: @priv_pass
+  }
+
+  @usm_stats_unknown_user_names [1, 3, 6, 1, 6, 3, 15, 1, 1, 3, 0]
+  @usm_stats_unknown_engine_ids [1, 3, 6, 1, 6, 3, 15, 1, 1, 4, 0]
+  @usm_stats_wrong_digests [1, 3, 6, 1, 6, 3, 15, 1, 1, 5, 0]
+
   @sys_descr [1, 3, 6, 1, 2, 1, 1, 1, 0]
   @sys_uptime [1, 3, 6, 1, 2, 1, 1, 3, 0]
   # A long sysDescr makes a reply of a few of them too big for the
@@ -74,7 +110,7 @@ defmodule Detchi.SnmpTest do
           ]
         ),
         :snmpa_conf.agent_entry(:intAgentUDPPort, port),
-        :snmpa_conf.agent_entry(:snmpEngineID, ~c"agent"),
+        :snmpa_conf.agent_entry(:snmpEngineID, @agent_engine_id),
         :snmpa_conf.agent_entry(:snmpEngineMaxMessageSize, 484)
       ])
 
@@ -92,18 +128,52 @@ defmodule Detchi.SnmpTest do
     community = String.to_charlist(@community)
     :ok = :snmpa_conf.write_community_config(conf, [{community, community, ~c"all", ~c"", ~c""}])
 
+    users =
+      Enum.map(
+        [@auth_priv, @auth_no_priv, @no_auth_no_priv, @md5_des],
+        &String.to_charlist(&1.user)
+      ) ++ [String.to_charlist(@user <> "-wk")]
+
     :ok =
-      :snmpa_conf.write_vacm_config(conf, [
-        {:vacmSecurityToGroup, :v2c, ~c"all", ~c"all"},
-        {:vacmAccess, ~c"all", ~c"", :any, :noAuthNoPriv, :exact, ~c"all", ~c"", ~c"all"},
-        {:vacmViewTreeFamily, ~c"all", [1, 3, 6, 1], :included, :null}
-      ])
+      :snmpa_conf.write_vacm_config(
+        conf,
+        [
+          {:vacmSecurityToGroup, :v2c, ~c"all", ~c"all"},
+          {:vacmAccess, ~c"all", ~c"", :any, :noAuthNoPriv, :exact, ~c"all", ~c"", ~c"all"},
+          {:vacmViewTreeFamily, ~c"all", [1, 3, 6, 1], :included, :null}
+        ] ++ Enum.map(users, &{:vacmSecurityToGroup, :usm, &1, ~c"all"})
+      )
 
     :ok = :snmpa_conf.write_context_config(conf, [~c""])
-    :ok = :snmpa_conf.write_usm_config(conf, [])
+    :ok = :snmpa_conf.write_usm_config(conf, Enum.map(users, &usm_entry/1))
     :ok = :snmpa_conf.write_notify_config(conf, [])
     :ok = :snmpa_conf.write_target_addr_config(conf, [])
     :ok = :snmpa_conf.write_target_params_config(conf, [])
+  end
+
+  # The agent's users, with keys made as an operator would, by hand.
+  defp usm_entry(user) do
+    key = &:snmp.passwd2localized_key(&1, String.to_charlist(&2), @agent_engine_id)
+
+    {auth, auth_key, priv, priv_key} =
+      case to_string(user) do
+        name when name in [@user, @user <> "-wk"] ->
+          {:usmHMACSHAAuthProtocol, key.(:sha, @auth_pass), :usmAesCfb128Protocol,
+           Enum.take(key.(:sha, @priv_pass), 16)}
+
+        @user <> "-an" ->
+          {:usmHMAC192SHA256AuthProtocol, key.(:sha256, @auth_pass), :usmNoPrivProtocol, ~c""}
+
+        @user <> "-nn" ->
+          {:usmNoAuthProtocol, ~c"", :usmNoPrivProtocol, ~c""}
+
+        @user <> "-md" ->
+          {:usmHMACMD5AuthProtocol, key.(:md5, @auth_pass), :usmDESPrivProtocol,
+           Enum.take(key.(:md5, @priv_pass), 16)}
+      end
+
+    {@agent_engine_id, user, user, :zeroDotZero, auth, ~c"", ~c"", priv, ~c"", ~c"", ~c"",
+     auth_key, priv_key}
   end
 
   # Each test registers targets of its own name.
@@ -133,7 +203,7 @@ defmodule Detchi.SnmpTest do
                status: :ok,
                rtt_us: rtt,
                snmp: %{version: :v2c, op: :get, varbinds: varbinds}
-             } = result = Snmp.measure(target, :v2c, probe)
+             } = result = Snmp.measure(target, @credential, probe)
 
       assert port == ctx.port
       assert map_size(result) == 6
@@ -156,7 +226,7 @@ defmodule Detchi.SnmpTest do
       probe = %{@probe | oids: List.duplicate(@sys_descr, 5)}
 
       assert %{status: :error, rtt_us: _, error: {:snmp, :tooBig, 0}, snmp: snmp} =
-               Snmp.measure(target, :v2c, probe)
+               Snmp.measure(target, @credential, probe)
 
       assert snmp == %{version: :v2c, op: :get}
     end
@@ -167,7 +237,7 @@ defmodule Detchi.SnmpTest do
       started = System.monotonic_time(:millisecond)
 
       assert %{status: :timeout, timeout_ms: 200, snmp: %{version: :v2c, op: :get}} =
-               result = Snmp.measure(target, :v2c, %{@probe | timeout_ms: 200})
+               result = Snmp.measure(target, @credential, %{@probe | timeout_ms: 200})
 
       refute Map.has_key?(result, :rtt_us)
       assert (System.monotonic_time(:millisecond) - started) in 200..400
@@ -177,12 +247,13 @@ defmodule Detchi.SnmpTest do
       target = name(ctx.test)
       :ok = Snmp.register(target, {0, 0, 0, 0, 0, 0, 0, 1}, snmp(ctx))
 
-      assert %{status: :ok, addr: {0, 0, 0, 0, 0, 0, 0, 1}} = Snmp.measure(target, :v2c, @probe)
+      assert %{status: :ok, addr: {0, 0, 0, 0, 0, 0, 0, 1}} =
+               Snmp.measure(target, @credential, @probe)
     end
 
     test "raises for a target that is not registered", ctx do
       assert_raise RuntimeError, "cannot get the address of #{name(ctx.test)} (not_found)", fn ->
-        Snmp.measure(name(ctx.test), :v2c, @probe)
+        Snmp.measure(name(ctx.test), @credential, @probe)
       end
     end
 
@@ -191,8 +262,151 @@ defmodule Detchi.SnmpTest do
       :ok = Snmp.register(target, {127, 0, 0, 1}, snmp(ctx))
 
       assert_raise RuntimeError, "sync_get2 failed (send_failed, tooBig)", fn ->
-        Snmp.measure(target, :v2c, %{@probe | oids: List.duplicate(@sys_descr, 6000)})
+        Snmp.measure(target, @credential, %{@probe | oids: List.duplicate(@sys_descr, 6000)})
       end
+    end
+  end
+
+  describe "measure/3 with v3" do
+    defp v3(ctx, credential, oids \\ [@sys_uptime]) do
+      target = name(ctx.test, credential.name)
+      :ok = Snmp.register(target, {127, 0, 0, 1}, snmp(ctx, credential))
+      {target, Snmp.measure(target, credential, %{@probe | oids: oids})}
+    end
+
+    defp engine_id(target),
+      do: elem(:snmpm.agent_info(String.to_charlist(target), :engine_id), 1)
+
+    test "discovers the engine ID and gets, at each security level", ctx do
+      log =
+        capture_log(fn ->
+          for credential <- [@auth_priv, @auth_no_priv, @no_auth_no_priv, @md5_des] do
+            started = System.monotonic_time(:millisecond)
+            {target, result} = v3(ctx, credential)
+
+            assert %{
+                     status: :ok,
+                     addr: {127, 0, 0, 1},
+                     snmp: %{version: :v3, op: :get, varbinds: [{@sys_uptime, :TimeTicks, _}]}
+                   } = result
+
+            assert System.monotonic_time(:millisecond) - started < 500
+            assert engine_id(target) == @agent_engine_id
+          end
+        end)
+
+      for secret <- [@user, @auth_pass, @priv_pass], do: refute(log =~ secret)
+    end
+
+    test "syncs the time with the agent and sends again, within the attempt", ctx do
+      {target, %{status: :ok}} = v3(ctx, @auth_priv)
+      {:ok, boots} = :snmpm_config.get_usm_eboots(@agent_engine_id)
+
+      # As if the agent had restarted since: snmpm sends boots the agent
+      # does not take, and gets a report of usmStatsNotInTimeWindows. That
+      # is the start of a request with nothing to sync, which times out.
+      # snmpm_config is internal to snmpm.
+      :ok = :snmpm_config.set_usm_eboots(@agent_engine_id, boots - 1)
+      started = System.monotonic_time(:millisecond)
+
+      assert %{status: :ok, rtt_us: rtt} = Snmp.measure(target, @auth_priv, @probe)
+      assert System.monotonic_time(:millisecond) - started < 500
+      assert rtt < 500_000
+      assert :snmpm_config.get_usm_eboots(@agent_engine_id) == {:ok, boots}
+    end
+
+    test "a wrong key is an snmp_report, with the RTT", ctx do
+      # A user of its own: snmpm holds one key per user and engine ID.
+      credential = %{@auth_priv | name: "wk", user: @user <> "-wk", auth_pass: "wr0ng-auth-pass"}
+
+      assert {_target,
+              %{status: :error, rtt_us: _, error: {:snmp_report, @usm_stats_wrong_digests}} =
+                result} = v3(ctx, credential)
+
+      assert result.snmp == %{version: :v3, op: :get}
+    end
+
+    test "an unknown user is an snmp_report, at every security level", ctx do
+      for credential <- [@auth_priv, @no_auth_no_priv] do
+        credential = %{
+          credential
+          | user: "nobody-#{credential.name}",
+            name: "#{credential.name}-nobody"
+        }
+
+        assert {_, %{status: :error, error: {:snmp_report, @usm_stats_unknown_user_names}}} =
+                 v3(ctx, credential)
+      end
+    end
+
+    test "a new engine ID of the agent is discovered on the next attempt", ctx do
+      {target, %{status: :ok}} = v3(ctx, @auth_priv)
+      # As if the agent had been replaced, keeping the address and the user.
+      user = String.to_charlist(@user)
+      key = :snmp.passwd2localized_key(:sha, String.to_charlist(@auth_pass), ~c"old-engine")
+
+      config = [
+        auth: :usmHMACSHAAuthProtocol,
+        auth_key: key,
+        priv: :usmAesCfb128Protocol,
+        priv_key: Enum.take(key, 16)
+      ]
+
+      _ = :snmpm.unregister_usm_user(~c"old-engine", user)
+      :ok = :snmpm.register_usm_user(~c"old-engine", user, config)
+      agent = String.to_charlist(target)
+      :ok = :snmpm.update_agent_info(:detchi, agent, :engine_id, ~c"old-engine")
+
+      assert %{status: :error, error: {:snmp_report, @usm_stats_unknown_engine_ids}} =
+               Snmp.measure(target, @auth_priv, @probe)
+
+      assert engine_id(target) == ~c""
+      assert %{status: :ok} = Snmp.measure(target, @auth_priv, @probe)
+      assert engine_id(target) == @agent_engine_id
+    end
+
+    test "no answer to the discovery is a timeout, from its start", ctx do
+      target = name(ctx.test)
+      :ok = Snmp.register(target, {127, 0, 0, 1}, %{snmp(ctx, @auth_priv) | port: free_port()})
+      before = System.os_time(:microsecond)
+
+      assert %{status: :timeout, ts: ts, timeout_ms: 200, snmp: %{version: :v3, op: :get}} =
+               result = Snmp.measure(target, @auth_priv, %{@probe | timeout_ms: 200})
+
+      refute Map.has_key?(result, :rtt_us)
+      assert (ts - before) in 0..10_000
+      assert (System.os_time(:microsecond) - before) in 200_000..400_000
+      assert engine_id(target) == ~c""
+    end
+
+    test "targets on one agent share a user with the same credential", ctx do
+      {_, %{status: :ok}} = v3(ctx, @auth_priv)
+      {_, %{status: :ok}} = v3(ctx, %{@auth_priv | name: "same"})
+    end
+
+    test "a target on an agent and user taken with another credential raises", ctx do
+      credential = %{@auth_priv | name: "cf1", user: @user <> "-cf"}
+      {first, %{status: :error}} = v3(ctx, credential)
+      second = name(ctx.test, "cf2")
+      other = %{credential | name: "cf2", auth_pass: "an0ther-auth-pass"}
+      :ok = Snmp.register(second, {127, 0, 0, 1}, snmp(ctx, other))
+
+      message =
+        "#{second} reaches the same SNMP engine with the same v3 user as #{first}, " <>
+          "but with another credential; check the credentials of both"
+
+      assert_raise RuntimeError, message, fn -> Snmp.measure(second, other, @probe) end
+
+      # The first keeps its user; the agent does not know it here.
+      assert %{error: {:snmp_report, @usm_stats_unknown_user_names}} =
+               Snmp.measure(first, credential, @probe)
+    end
+
+    test "a registration again forgets the engine ID", ctx do
+      {target, %{status: :ok}} = v3(ctx, @auth_priv)
+      :ok = Snmp.register(target, {127, 0, 0, 1}, snmp(ctx, @auth_priv))
+      assert engine_id(target) == ~c""
+      assert %{status: :ok} = Snmp.measure(target, @auth_priv, @probe)
     end
   end
 
@@ -200,14 +414,14 @@ defmodule Detchi.SnmpTest do
     test "registers again, at a new address or port", ctx do
       target = name(ctx.test)
       :ok = Snmp.register(target, {127, 0, 0, 1}, %{snmp(ctx) | port: free_port()})
-      assert %{status: :timeout} = Snmp.measure(target, :v2c, %{@probe | timeout_ms: 100})
+      assert %{status: :timeout} = Snmp.measure(target, @credential, %{@probe | timeout_ms: 100})
 
       :ok = Snmp.register(target, {127, 0, 0, 1}, snmp(ctx))
-      assert %{status: :ok, port: port} = Snmp.measure(target, :v2c, @probe)
+      assert %{status: :ok, port: port} = Snmp.measure(target, @credential, @probe)
       assert port == ctx.port
 
       :ok = Snmp.register(target, {127, 0, 0, 1}, snmp(ctx))
-      assert %{status: :ok} = Snmp.measure(target, :v2c, @probe)
+      assert %{status: :ok} = Snmp.measure(target, @credential, @probe)
     end
   end
 
@@ -349,7 +563,7 @@ defmodule Detchi.SnmpTest do
   test "Record encodes the result of measure/3", ctx do
     target = name(ctx.test)
     :ok = Snmp.register(target, {127, 0, 0, 1}, snmp(ctx))
-    result = Snmp.measure(target, :v2c, %{@probe | oids: [@sys_uptime, @sys_descr]})
+    result = Snmp.measure(target, @credential, %{@probe | oids: [@sys_uptime, @sys_descr]})
 
     line =
       %{target: target, probe: "uptime", protocol: :snmp}

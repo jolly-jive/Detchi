@@ -94,7 +94,7 @@ Detchi は、1回の測定を JSON の1行として、機器ごと、日ごと�
 | `errno` | ICMP の詳しいことがない、ソケットの誤り(TCP の RST、手元に経路がない、など) | `errno` | `refused`、`unreachable` |
 | `icmp` | ICMP、TCP、UDP の測定に ICMP の誤りが返った | `type`、`code`、`from` | `refused`(Port Unreachable)、`unreachable`(それ以外) |
 | `snmp` | SNMP の応答の `errorStatus` が 0 でない | `error_status`、`error_index` | `error` |
-| `snmp_report` | SNMPv3 の report PDU が返った(v3 用。v3 にはまだ対応していません) | `oid` | `error` |
+| `snmp_report` | 応答の代わりに SNMPv3 の report PDU が返った | `oid` | `error` |
 | `resolve` | ホスト名を一度も引けていない | `errno` | `error` |
 | `internal` | Detchi が想定していない失敗。詳しいことは Detchi のログにあります。 | | `error` |
 
@@ -194,8 +194,18 @@ Detchi は、1回の測定を JSON の1行として、機器ごと、日ごと�
 - `status` は `ok`、`timeout`、`error` だけです。
 - エージェントがいない、ポートが閉じている、community が誤っている、のどれも `timeout` になります。SNMP では ICMP の誤りが見えないためです。
 - エージェントが受け付けられるより大きい要求は、エージェントが捨てるので、`tooBig` ではなく `timeout` になります。
-- 再送しないので、`timeout` の1行が、失われた要求1つです。
-- `rtt_us` には、Erlang の SNMP のマネージャーの中の時間が入ります(ループバックで約 0.3〜1.1ms。ICMP は 0.15ms)。
+- 再送しないので、`timeout` の1行が、失われた要求1つです。v3 では、エージェントが時刻がずれていると答えた後に、要求をもう1回送ります。これはプロトコルの手順で、再送ではありません([設定](configuration.ja.md#v3-1)を参照)。
+- `rtt_us` には、Erlang の SNMP のマネージャーの中の時間が入ります(ループバックで約 0.3〜1.1ms。ICMP は 0.15ms。v3 の authPriv では 0.4〜0.6ms)。
+- `snmp_report` の `oid` は、varbinds と同じく数値です。出うるもの:
+
+  | `oid` | 名前 | よくある原因 |
+  | --- | --- | --- |
+  | `1.3.6.1.6.3.15.1.1.1.0` | `usmStatsUnsupportedSecLevels` | エージェントで、そのユーザーにこのセキュリティレベルを設定していない。 |
+  | `1.3.6.1.6.3.15.1.1.2.0` | `usmStatsNotInTimeWindows` | timeout の中で時計を合わせられなかった。 |
+  | `1.3.6.1.6.3.15.1.1.3.0` | `usmStatsUnknownUserNames` | `user` の誤り。 |
+  | `1.3.6.1.6.3.15.1.1.4.0` | `usmStatsUnknownEngineIDs` | エージェントの engine ID が変わった。次の要求で新しいものを調べます。 |
+  | `1.3.6.1.6.3.15.1.1.5.0` | `usmStatsWrongDigests` | `auth` か `auth_pass` の誤り。 |
+  | `1.3.6.1.6.3.15.1.1.6.0` | `usmStatsDecryptionErrors` | `priv_pass` の誤り。 |
 
 ### どのプロトコルでも
 
